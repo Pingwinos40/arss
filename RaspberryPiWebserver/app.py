@@ -13,19 +13,18 @@ def index():
 
 @app.route('/send', methods=['POST'])
 def send():
-    # pull out the Hz value the form actually sends
+    # Grab the desired frequency (Hz) from the form
     freq = request.form.get('freq', '').strip()
     if not freq:
         status = "ERROR: No frequency provided."
         return render_template('index.html', status=status)
 
     try:
-        # hit the Arduino’s new endpoint
+        # Send to the new /setFreq endpoint on the Arduino
         r = requests.get(f"http://{ARDUINO_IP}/setFreq?value={freq}", timeout=2)
         status = r.text
     except Exception as e:
         status = f"ERROR: {e}"
-
     return render_template('index.html', status=status)
 
 @app.route('/stop', methods=['POST'])
@@ -61,3 +60,4 @@ def status():
 if __name__ == '__main__':
     # Listen on all interfaces, port 5000
     app.run(host='0.0.0.0', port=5000, debug=False)
+
