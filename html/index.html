@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HALO Wireless Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 20px;
+        }
+
+        form {
+            margin-bottom: 10px;
+        }
+
+        #statusText {
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+
+        .status-running {
+            color: green;
+        }
+
+        .status-accelerating,
+        .status-decelerating {
+            color: orange;
+        }
+
+        .status-stopped {
+            color: red;
+        }
+
+        .status-offline {
+            color: gray;
+        }
+
+        canvas {
+            margin-top: 20px;
+            max-width: 100%;
+            height: 300px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Stepper Motor Control</h1>
+
+    <form action="/send" method="post">
+        <label for="freq">Set Frequency (Hz):</label>
+        <input 
+            type="number" 
+            id="freq" 
+            name="freq" 
+            min="0" 
+            step="0.1" 
+            placeholder="e.g. 10.0" 
+            required
+        >
+        <button type="submit">Send</button>
+    </form>
+
+    <form action="/stop" method="post">
+        <button type="submit">Stop</button>
+    </form>
+
+    <form action="/direction" method="post">
+        <button type="submit" name="direction" value="CW">Set Direction: CW</button>
+        <button type="submit" name="direction" value="CCW">Set Direction: CCW</button>
+    </form>
+
+    <p>Status: <span id="statusText" class="status-stopped">Loading...</span></p>
+
+    <p>Environment:</p>
+    <ul>
+        <li id="tempText">Temperature: -- &deg;C</li>
+        <li id="humText">Humidity: -- %</li>
+    </ul>
+
+    <h2>Live Environment Data</h2>
+    <div style="max-width: 100%; height: 300px;">
+        <canvas id="envChart"></canvas>
+    </div>
+
+    <script>
+        const tempData = [];
+        const humData = [];
+        const timeLabels = [];
+
+        const ctx = document.getElementById('envChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: timeLabels,
+                datasets: [
+                    {
+                        label: 'Temperature (°C)',
+                        borderColor: 'red',
+                        data: tempData,
+                        fill: false,
+                        tension: 0.2
+                    },
+                    {
+                        label: 'Humidity (%)',
+                        borderColor: 'blue',
+                        data: humData,
+                        fill: false,
+                        tension: 0.2
+                    }
+                ]
+            },
+            options: {
+                animation: false,
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Time'
+                        }
+                    },
+                    y: {
+                        suggestedMin: 0,
+                        suggestedMax: 100,
+                        title: {
+                            display: true,
+                            text: 'Value'
+                        }
+                    }
+                }
+            }
+        });
+
+        function updateChart(temp, hum) {
+            const now = new Date().toLocaleTimeString();
+            timeLabels.push(now);
+            tempData.push(temp);
+            humData.push(hum);
+
+            if (timeLabels.length > 60) {
+                timeLabels.shift();
+                tempData.shift();
+                humData.shift();
+            }
+
+            chart.update();
+        }
+
+        let lastChartUpdate = 0;
+
+        function updateStatus() {
+            fetch('/status')
+                .then(response => response.text())
+                .then(text => {
+                    const statusText = document.getElementById("statusText");
+                    if (!statusText) return;
+
+                    statusText.innerText = text;
+
+                    let statusClass = "status-offline";
+                    if (text.includes("STATUS:")) {
+                        const status = text.split("STATUS:")[1].trim().toUpperCase();
+                        if (status === "RUNNING") {
+                            statusClass = "status-running";
+                        } else if (status === "ACCELERATING") {
+                            statusClass = "status-accelerating";
+                        } else if (status === "DECELERATING") {
+                            statusClass = "status-decelerating";
+                        } else if (status === "STOPPED") {
+                            statusClass = "status-stopped";
+                        }
+                    }
+                    statusText.className = statusClass;
+
+                    const tempMatch = text.match(/TEMP[^:]*:\s*([\d.]+)/);
+                    const humMatch  = text.match(/HUM[^:]*:\s*([\d.]+)/);
+
+                    if (tempMatch) {
+                        const temp = parseFloat(tempMatch[1]);
+                        document.getElementById("tempText").innerText = "Temperature: " + temp + " °C";
+
+                        const now = Date.now();
+                        if (now - lastChartUpdate > 1000) {
+                            lastChartUpdate = now;
+
+                            if (humMatch) {
+                                const hum = parseFloat(humMatch[1]);
+                                document.getElementById("humText").innerText = "Humidity: " + hum + " %";
+                                updateChart(temp, hum);
+                            }
+                        }
+                    }
+                })
+                .catch(() => {
+                    const statusText = document.getElementById("statusText");
+                    if (statusText) {
+                        statusText.innerText = "STATUS:OFFLINE";
+                        statusText.className = "status-offline";
+                    }
+                    document.getElementById("tempText").innerText = "Temperature: -- °C";
+                    document.getElementById("humText").innerText = "Humidity: -- %";
+                });
+        }
+
+        setInterval(updateStatus, 100);
+        updateStatus();
+    </script>
+</body>
+</html>
