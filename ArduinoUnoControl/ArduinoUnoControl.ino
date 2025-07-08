@@ -110,21 +110,23 @@ void loop() {
     Client.flush();
     String Response = "INVALID_COMMAND";
 
-    if (Request.indexOf("GET /setRPM?value=") >= 0) {
-      int idx = Request.indexOf("=") + 1;
-      int rpm = Request.substring(idx).toInt();
-      if (rpm > 0 && rpm <= MaxRpm) {
-        TargetRpm = rpm;
-        frequency = rpm / 42.5;
-        MotorRunning = true;
-        Status = "ACCELERATING";
-        Response = "TARGET_RPM_SET_TO:" + String(TargetRpm);
-      } else {
-        TargetRpm = 0;
-        Status = "STOPPING";
-        Response = "INVALID_RPM";
-      }
+  if (Request.indexOf("GET /setFreq?value=") >= 0) {
+    int idx         = Request.indexOf('=') + 1;
+    float freqInput = Request.substring(idx).toFloat();        // Hz
+    int   rpm       = int(freqInput * 42.5 + 0.5);            // rpm = Hz × 42.5
+
+    if (rpm > 0 && rpm <= MaxRpm) {
+      TargetRpm   = rpm;
+      frequency   = freqInput;                                // store for status
+      MotorRunning = true;
+      Status      = "ACCELERATING";
+      Response    = "TARGET_FREQ_SET_TO:" + String(freqInput, 2) + "Hz";
+    } else {
+      TargetRpm   = 0;
+      Status      = "STOPPING";
+      Response    = "INVALID_FREQUENCY";
     }
+  }
 
     if (Request.indexOf("GET /stop") >= 0) {
       TargetRpm = 0;
@@ -154,9 +156,9 @@ void loop() {
                  ",RUNNING:" + String(MotorRunning ? "YES" : "NO") +
                  ",DIR:" + Direction +
                  ",STATUS:" + Status +
-                 ",TEMP:" + String(tempC, 1) +
-                 ",HUM:" + String(humidity, 1) +
-                 ",Hz:" + String(frequency, 1);
+                 ",TEMP(C):" + String(tempC, 1) +
+                 ",HUM(rel.):" + String(humidity, 1) +
+                 ",FREQ(Hz):" + String(frequency, 1);
     }
 
     Client.println("HTTP/1.1 200 OK");
