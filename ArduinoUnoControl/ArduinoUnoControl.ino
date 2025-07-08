@@ -68,7 +68,7 @@ void UpdateTimerFrequencyFromRpm(int rpm) {
   StepperTimer.end();
   BeginStepperTimer(frequency);
 
-  // ✅ Send frequency to Nano via UART
+  // Send frequency to Nano via UART
   Serial1.println((int)frequency);
 }
 
@@ -107,7 +107,13 @@ void loop() {
   WiFiClient Client = MyServer.available();
   if (Client) {
     String Request = Client.readStringUntil('\r');
-    Client.flush();
+    Serial.print("⟪HTTP REQ⟫ ");
+    Serial.println(Request);
+
+    Client.read();                 // consume the '\n'
+    while (Client.available())     // discard rest of headers
+      Client.read();
+
     String Response = "INVALID_COMMAND";
 
   if (Request.indexOf("GET /setFreq?value=") >= 0) {
