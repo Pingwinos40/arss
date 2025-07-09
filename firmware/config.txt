@@ -1,0 +1,32 @@
+# /boot/firmware/config.txt  — Cleaned & annotated for Arducam Quad-Camera HAT
+# For full docs and more options: http://rptl.io/configtxt
+
+# ───── Audio ───────────────────────────────────────────────────────────────────
+dtparam=audio=on
+
+# ───── GPU / Video Driver ───────────────────────────────────────────────────────
+dtoverlay=vc4-kms-v3d,cma-512
+max_framebuffers=2
+
+# ───── Firmware Behavior ───────────────────────────────────────────────────────
+disable_fw_kms_setup=1    # Don’t let firmware override cmdline.txt video settings
+arm_64bit=1               # Run kernel in 64-bit mode
+disable_overscan=1        # Disable display overscan compensation
+arm_boost=1               # Max performance for CPU/GPU
+
+# ───── USB (Compute Module) ────────────────────────────────────────────────────
+[cm4]
+otg_mode=1                # Host-mode on built-in XHCI USB (remove if you need legacy DWC2 or gadget mode)
+
+[cm5]
+dtoverlay=dwc2,dr_mode=host
+
+# ───── Initramfs / Displays ────────────────────────────────────────────────────
+display_auto_detect=1     # Auto-load overlays for DSI displays
+auto_initramfs=1          # Auto-load initramfs if present
+
+# ───── Camera (Arducam Quad-HAT) ───────────────────────────────────────────────
+camera_auto_detect=0      # ─── DO NOT TOUCH ─── required to disable stock camera probing
+dtoverlay=arducam-64mp,cam0  # ─── DO NOT TOUCH ─── critical: loads the quad-camera overlay
+
+# End of config.txt — leave the two “DO NOT TOUCH” lines exactly as-is!
