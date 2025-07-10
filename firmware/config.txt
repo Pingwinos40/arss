@@ -1,32 +1,63 @@
-# /boot/firmware/config.txt  — Cleaned & annotated for Arducam Quad-Camera HAT
-# For full docs and more options: http://rptl.io/configtxt
+# /boot/firmware/config.txt — Cleaned & annotated for Arducam Quad-Camera HAT
+# For full docs and more options see: http://rptl.io/configtxt
+#
 
-# ───── Audio ───────────────────────────────────────────────────────────────────
+# Enable audio (loads snd_bcm2835)
 dtparam=audio=on
 
-# ───── GPU / Video Driver ───────────────────────────────────────────────────────
+# Enable DRM VC4 V3D driver with 512 MB CMA for hardware acceleration
 dtoverlay=vc4-kms-v3d,cma-512
+
+# Allow two framebuffers for multi-display setups
 max_framebuffers=2
 
-# ───── Firmware Behavior ───────────────────────────────────────────────────────
-disable_fw_kms_setup=1    # Don’t let firmware override cmdline.txt video settings
-arm_64bit=1               # Run kernel in 64-bit mode
-disable_overscan=1        # Disable display overscan compensation
-arm_boost=1               # Max performance for CPU/GPU
+# Prevent firmware from creating an initial video= setting; use kernel’s default
+disable_fw_kms_setup=1
 
-# ───── USB (Compute Module) ────────────────────────────────────────────────────
+# Run the kernel in 64-bit mode
+arm_64bit=1
+
+# Disable display overscan compensation
+disable_overscan=1
+
+# Boost CPU and GPU to maximum performance
+arm_boost=1
+
+# Automatically detect and load overlays for any connected DSI displays
+display_auto_detect=1
+
+# Automatically load initramfs files if found on boot
+auto_initramfs=1
+
 [cm4]
-otg_mode=1                # Host-mode on built-in XHCI USB (remove if you need legacy DWC2 or gadget mode)
+# Enable host mode on the built-in XHCI USB controller
+# (remove this if you need legacy DWC2 or USB gadget mode)
+otg_mode=1
 
 [cm5]
+# Enable DWC2 in host mode for USB on Compute Module 5
 dtoverlay=dwc2,dr_mode=host
 
-# ───── Initramfs / Displays ────────────────────────────────────────────────────
-display_auto_detect=1     # Auto-load overlays for DSI displays
-auto_initramfs=1          # Auto-load initramfs if present
+[all]
+# ─── Arducam Quad-HAT configuration (DO NOT REMOVE OR REORDER) ───────────────
+# Disable the stock camera auto-detect so our overlays can take over
+camera_auto_detect=0
 
-# ───── Camera (Arducam Quad-HAT) ───────────────────────────────────────────────
-camera_auto_detect=0      # ─── DO NOT TOUCH ─── required to disable stock camera probing
-dtoverlay=arducam-64mp,cam0  # ─── DO NOT TOUCH ─── critical: loads the quad-camera overlay
+# Load Arducam PiVariety base driver  
+dtoverlay=arducam-pivariety
 
-# End of config.txt — leave the two “DO NOT TOUCH” lines exactly as-is!
+# Load the 64 MP quad-sensor overlay on CSI0  
+dtoverlay=arducam-64mp,cam0
+
+# ─── Required I²C channels for the Quad-HAT ───────────────────────────────────
+# Enable I²C-1 on the GPIO header (i2c_arm)
+dtparam=i2c_arm=on
+
+# Enable VC-sideband I²C for camera control (i2c_vc)
+dtparam=i2c_vc=on
+
+# Enable CSI0 sideband I²C for sensor multiplexing
+dtparam=i2c_csi_dsi0=on
+
+# Enable CSI1 sideband I²C for sensor multiplexing
+dtparam=i2c_csi_dsi1=on
