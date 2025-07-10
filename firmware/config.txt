@@ -39,25 +39,30 @@ otg_mode=1
 dtoverlay=dwc2,dr_mode=host
 
 [all]
-# ─── Arducam Quad-HAT configuration (DO NOT REMOVE OR REORDER) ───────────────
-# Disable the stock camera auto-detect so our overlays can take over
+# ─── Arducam Quad-HAT config (DO NOT REMOVE OR REORDER) ────────────────────
+
+# Disable stock Raspberry camera auto-detect so only our overlays run
 camera_auto_detect=0
 
-# Load Arducam PiVariety base driver  
-dtoverlay=arducam-pivariety
-
-# Load the 64 MP quad-sensor overlay on CSI0  
+# Load the 64 MP sensor on CSI0 (must be first)
 dtoverlay=arducam-64mp,cam0
 
-# ─── Required I²C channels for the Quad-HAT ───────────────────────────────────
-# Enable I²C-1 on the GPIO header (i2c_arm)
+# Load PiVariety driver for the Pi-camera modules on CSI0’s multiplexer
+dtoverlay=arducam-pivariety,cam1
+dtoverlay=arducam-pivariety,cam2
+dtoverlay=arducam-pivariety,cam3
+
+# ─── Required I²C channels for all four sensors ────────────────────────────
+
+# GPIO-header I²C-1 (unused by hat but safe to leave on)
 dtparam=i2c_arm=on
 
-# Enable VC-sideband I²C for camera control (i2c_vc)
+# VC-sideband I²C (camera reset / control bus)
 dtparam=i2c_vc=on
 
-# Enable CSI0 sideband I²C for sensor multiplexing
+# CSI0 sideband I²C (mux channel A)
 dtparam=i2c_csi_dsi0=on
 
-# Enable CSI1 sideband I²C for sensor multiplexing
+# CSI1 sideband I²C (mux channel B)
 dtparam=i2c_csi_dsi1=on
+
