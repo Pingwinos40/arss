@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LCR Meter Control Dashboard</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 20px;
+    }
+    label {
+      display: block;
+      margin-top: 10px;
+    }
+    input, select {
+      margin-top: 5px;
+      width: 250px;
+      padding: 5px;
+    }
+    button {
+      margin-top: 15px;
+      padding: 10px 20px;
+    }
+    .status {
+      margin-top: 20px;
+      font-weight: bold;
+      font-size: 1.2em;
+    }
+    #liveData {
+      margin-top: 10px;
+      padding: 10px;
+      background-color: #eee;
+      width: fit-content;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <h1>LCR Meter Control (SCPI)</h1>
+
+  <form id="daqForm">
+    <label for="mode">Measurement Mode:</label>
+    <select id="mode" name="mode">
+      <option value="R-X">R-X</option>
+      <option value="Z-deg">Z-deg</option>
+      <option value="C">Capacitance</option>
+      <option value="L">Inductance</option>
+      <option value="Q">Quality Factor</option>
+      <option value="D">Dissipation Factor</option>
+      <option value="DCR">DCR</option>
+    </select>
+
+    <label for="freq">Sampling Frequency (Hz) [20 - 500000]:</label>
+    <input type="number" id="freq" name="freq" value="1000" required>
+
+    <label for="voltage">AC Test Signal Voltage (V) [0.005 - 2]:</label>
+    <input type="number" step="0.001" id="voltage" name="voltage" value="1" required>
+
+    <label for="speed">Measurement Speed:</label>
+    <select id="speed" name="speed">
+      <option value="low">Low</option>
+      <option value="med" selected>Medium</option>
+      <option value="fast">Fast</option>
+    </select>
+
+    <label for="interval">Recording Interval (seconds):</label>
+    <input type="number" step="0.01" id="interval" name="interval" value="0.5" required>
+
+    <label for="filename">CSV Filename:</label>
+    <input type="text" id="filename" name="filename" value="measurements.csv" required>
+
+    <div>
+      <button type="button" onclick="startDAQ()">Start Recording</button>
+      <button type="button" onclick="stopDAQ()">Stop</button>
+    </div>
+  </form>
+
+  <div class="status">
+    <p>Status: <span id="statusText">Idle</span></p>
+    <div id="liveData">--</div>
+  </div>
+
+  <script>
+    function startDAQ() {
+      const form = document.getElementById("daqForm");
+      const formData = new FormData(form);
+
+      fetch('/daq/start', {
+        method: 'POST',
+        body: new URLSearchParams(formData)
+      })
+      .then(res => {
+        if (!res.ok) throw new Error("DAQ start failed");
+        document.getElementById("statusText").textContent = "Recording...";
+      })
+      .catch(err => {
+        console.error(err);
+        alert("Error starting DAQ: " + err.message);
+      });
+    }
+
+    function stopDAQ() {
+      fetch('/daq/stop', { method: 'POST' })
+      .then(() => {
+        document.getElementById("statusText").textContent = "Stopped";
+      })
+      .catch(err => {
+        console.error(err);
+        alert("Error stopping DAQ: " + err.message);
+      });
+    }
+
+    function fetchLiveData() {
+      fetch('/daq/data')
+        .then(res => res.json())
+        .then(data => {
+          const box = document.getElementById("liveData");
+          if (data && data.timestamp !== undefined) {
+            box.textContent = `Time: ${data.timestamp.toFixed(3)} s\nValue: ${data.value}`;
+          } else {
+            box.textContent = "--";
+          }
+        })
+        .catch(err => {
+          console.warn("Live data error:", err);
+          document.getElementById("liveData").textContent = "--";
+        });
+    }
+
+    setInterval(fetchLiveData, 1000);
+  </script>
+</body>
+</html>
