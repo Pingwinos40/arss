@@ -4,6 +4,7 @@
 from flask import Flask, render_template, request, Response
 import subprocess
 import requests
+from lcr_controller import LCRRecorder
 
 
 app = Flask(__name__)
@@ -141,24 +142,22 @@ def status():
     except Exception:
         return "STATUS:OFFLINE"
 
-if __name__ == '__main__':
-    # Listen on all interfaces, port 5000
-    app.run(host='0.0.0.0', port=5000, debug=False)
-
 # SCPI Communication for Flask Webserver
 
 from flask import Flask, request, render_template, jsonify
-from lcr_controller import LCRRecorder
 
-app = Flask(__name__)
+
 lcr = LCRRecorder()
 
 @app.route("/daq")
 def daq_dashboard():
     return render_template("daq.html")
 
+import traceback
+
 @app.route("/daq/start", methods=["POST"])
 def daq_start():
+    print("== DAQ start form data ==", request.form.to_dict())
     try:
         lcr.connect()
         lcr.configure(
@@ -174,6 +173,7 @@ def daq_start():
         )
         return "OK"
     except Exception as e:
+        traceback.print_exc()                # full trace to console
         return f"ERROR: {e}", 400
 
 @app.route("/daq/stop", methods=["POST"])
@@ -185,3 +185,12 @@ def daq_stop():
 def daq_data():
     data = lcr.get_last_data()
     return jsonify({"timestamp": data[0], "value": data[1]} if data else {})
+
+
+
+
+if __name__ == '__main__':
+    # Listen on all interfaces, port 5000
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
+    
