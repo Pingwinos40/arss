@@ -132,6 +132,10 @@ def RecordMeasurements(instrument, filename, interval, measurement_mode, start_t
     instrument.close()
     status_label.config(text="Recording stopped.")
 
+    print("WriteTerm:", instrument.write_termination)
+    print("ReadTerm: ", instrument.read_termination)
+
+
 def StopRecording():
     StopEvent.set()
     status_label.config(text="Stopping recording...")
