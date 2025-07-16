@@ -31,7 +31,6 @@ auto_initramfs=1
 
 [cm4]
 # Enable host mode on the built-in XHCI USB controller
-# (remove this if you need legacy DWC2 or USB gadget mode)
 otg_mode=1
 
 [cm5]
