@@ -87,7 +87,7 @@ ttk.Combobox(root, textvariable=mode_var, values=["C", "L", "R-X"]).grid(row=0, 
 
 tk.Label(root, text="Interval (s):").grid(row=1, column=0, sticky="e")
 record_interval_entry = tk.Entry(root)
-record_interval_entry.insert(0, "0.5")
+record_interval_entry.insert(0, "0.01")
 record_interval_entry.grid(row=1, column=1)
 
 tk.Label(root, text="Total Duration (s):").grid(row=2, column=0, sticky="e")
