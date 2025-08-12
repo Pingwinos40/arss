@@ -142,7 +142,7 @@ sample_level_entry.insert(0, "1")
 sample_level_entry.grid(row=2, column=1, padx=5, pady=5)
 
 tk.Label(root, text="Measurement Speed:").grid(row=3, column=0, sticky="w", padx=5, pady=5)
-speed_var = tk.StringVar(value="med")
+speed_var = tk.StringVar(value="fast")
 ttk.Combobox(root, textvariable=speed_var, values=["low", "med", "fast"], state="readonly").grid(row=3, column=1, padx=5, pady=5)
 
 tk.Label(root, text="Recording Interval (s):").grid(row=4, column=0, sticky="w", padx=5, pady=5)
