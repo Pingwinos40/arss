@@ -1,137 +1,158 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>LCR Meter Control Dashboard</title>
+  <meta charset="utf-8" />
+  <title>LCR Meter DAQ</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body {
-      font-family: sans-serif;
-      margin: 20px;
+    :root {
+      --bg: #0f1115; --card: #151923; --text: #e6e8ee; --muted:#9aa3b2;
+      --accent:#6ea8fe; --ok:#31c48d; --warn:#f0ad4e; --border:#242a36;
     }
-    label {
-      display: block;
-      margin-top: 10px;
-    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; font-family: system-ui, Arial, sans-serif; background:var(--bg); color:var(--text); }
+    a { color: var(--accent); text-decoration: none; }
+    nav { display:flex; gap:20px; align-items:center; border-bottom:1px solid var(--border); padding-bottom:12px; margin-bottom:20px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr)); gap:16px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:16px; }
+    .card h3 { margin:0 0 12px; font-size:1.05rem; color:var(--muted); }
+    label { display:block; color:var(--muted); margin-top:10px; }
     input, select {
-      margin-top: 5px;
-      width: 250px;
-      padding: 5px;
+      width:100%; background:#0c0f14; color:var(--text); border:1px solid var(--border);
+      border-radius:10px; padding:6px 10px; margin-top:5px;
     }
-    button {
-      margin-top: 15px;
-      padding: 10px 20px;
-    }
-    .status {
-      margin-top: 20px;
-      font-weight: bold;
-      font-size: 1.2em;
-    }
-    #liveData {
-      margin-top: 10px;
-      padding: 10px;
-      background-color: #eee;
-      width: fit-content;
-      font-family: monospace;
-    }
+    button { background:#1f2a3b; color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px 12px; cursor:pointer; margin-top:12px; }
+    button:hover { border-color: var(--accent); }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .pill { display:inline-block; padding:4px 10px; border-radius:999px; border:1px solid var(--border); background:#0c0f14; font-size:0.9rem; color:var(--muted); }
+    pre { background:#0c0f14; border:1px solid var(--border); padding:8px; border-radius:10px; overflow:auto; }
   </style>
 </head>
 <body>
-    <nav style="margin-bottom: 20px; border-bottom: 1px solid #ccc; padding-bottom: 10px;">
-        <a href="/" style="margin-right: 20px;">Motor Dashboard</a>
-        <a href="/daq">LCR Meter DAQ</a>
-    </nav>
-    <h1>LCR Meter Control (SCPI)</h1>
+  <nav>
+    <strong>HALO</strong>
+    <a href="/">Motor Dashboard</a>
+    <a href="/daq">LCR Meter DAQ</a>
+    <span id="ConnNote" class="pill">DAQ: idle</span>
+  </nav>
 
-  <form id="daqForm">
-    <label for="mode">Measurement Mode:</label>
-    <select id="mode" name="mode">
-      <option value="R-X">R-X</option>
-      <option value="Z-deg">Z-deg</option>
-      <option value="C">Capacitance</option>
-      <option value="L">Inductance</option>
-      <option value="Q">Quality Factor</option>
-      <option value="D">Dissipation Factor</option>
-      <option value="DCR">DCR</option>
-    </select>
+  <div class="grid">
+    <div class="card">
+      <h3>Recording Setup</h3>
+      <!-- Keep advanced fields for future use; backend will ignore unknown params -->
+      <label for="Mode">Measurement Mode</label>
+      <select id="Mode">
+        <option value="R-X">R-X</option>
+        <option value="Z-deg">Z-deg</option>
+        <option value="C">Capacitance</option>
+        <option value="L">Inductance</option>
+        <option value="Q">Quality Factor</option>
+        <option value="D">Dissipation Factor</option>
+        <option value="DCR">DCR</option>
+      </select>
 
-    <label for="freq">Sampling Frequency (Hz) [20 - 500000]:</label>
-    <input type="number" id="freq" name="freq" value="1000" required>
+      <label for="Freq">Sampling Frequency (Hz)</label>
+      <input id="Freq" type="number" step="1" value="1000" />
 
-    <label for="voltage">AC Test Signal Voltage (V) [0.005 - 2]:</label>
-    <input type="number" step="0.001" id="voltage" name="voltage" value="1" required>
+      <label for="Voltage">AC Test Voltage (V)</label>
+      <input id="Voltage" type="number" step="0.001" value="1.0" />
 
-    <label for="speed">Measurement Speed:</label>
-    <select id="speed" name="speed">
-      <option value="low">Low</option>
-      <option value="med" selected>Medium</option>
-      <option value="fast">Fast</option>
-    </select>
+      <label for="Speed">Measurement Speed</label>
+      <select id="Speed">
+        <option value="low">Low</option>
+        <option value="med" selected>Medium</option>
+        <option value="fast">Fast</option>
+      </select>
 
-    <label for="interval">Recording Interval (seconds):</label>
-    <input type="number" step="0.01" id="interval" name="interval" value="0.5" required>
+      <label for="Interval">Recording Interval (s)</label>
+      <input id="Interval" type="number" step="0.01" value="0.5" />
 
-    <label for="filename">CSV Filename:</label>
-    <input type="text" id="filename" name="filename" value="measurements.csv" required>
+      <label for="FileName">CSV file</label>
+      <input id="FileName" type="text" value="measurements.csv" />
 
-    <div>
-      <button type="button" onclick="startDAQ()">Start Recording</button>
-      <button type="button" onclick="stopDAQ()">Stop</button>
+      <div class="row">
+        <button onclick="StartDaq()">Start</button>
+        <button onclick="StopDaq()">Stop</button>
+      </div>
+      <div class="row">
+        <span class="pill">Status: <span id="StatusText">Idle</span></span>
+      </div>
     </div>
-  </form>
 
-  <div class="status">
-    <p>Status: <span id="statusText">Idle</span></p>
-    <div id="liveData">--</div>
+    <div class="card">
+      <h3>Live Data</h3>
+      <pre id="LiveBox">--</pre>
+    </div>
   </div>
 
-  <script>
-    function startDAQ() {
-      const form = document.getElementById("daqForm");
-      const formData = new FormData(form);
+<script>
+  async function RequestJson(url) {
+    const r = await fetch(url, {cache:"no-store"});
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+  async function RequestOk(url, opts) {
+    const r = await fetch(url, {cache:"no-store", ...(opts||{})});
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json().catch(_=> ({}));
+  }
 
-      fetch('/daq/start', {
-        method: 'POST',
-        body: new URLSearchParams(formData)
-      })
-      .then(res => {
-        if (!res.ok) throw new Error("DAQ start failed");
-        document.getElementById("statusText").textContent = "Recording...";
-      })
-      .catch(err => {
-        console.error(err);
-        alert("Error starting DAQ: " + err.message);
-      });
+  function SetConnNote(s){ document.getElementById("ConnNote").textContent = `DAQ: ${s}`; }
+
+  // NOTE: Your current Flask DAQ endpoints accept GETs (/daq/start?file=...&interval=...).
+  // We pass other fields too (backend may ignore them unless you extend it).
+  async function StartDaq(){
+    const interval = document.getElementById("Interval").value || "0.5";
+    const file = encodeURIComponent(document.getElementById("FileName").value || "measurements.csv");
+    const qs = new URLSearchParams({
+      file: file, interval: interval,
+      mode: document.getElementById("Mode").value,
+      freq: document.getElementById("Freq").value,
+      voltage: document.getElementById("Voltage").value,
+      speed: document.getElementById("Speed").value
+    }).toString();
+
+    try {
+      await RequestOk(`/daq/start?${qs}`);
+      document.getElementById("StatusText").textContent = "Recording…";
+      SetConnNote("recording");
+    } catch(e) {
+      document.getElementById("StatusText").textContent = "Error";
+      SetConnNote("error");
+      alert(`Start failed: ${e.message}`);
     }
+  }
 
-    function stopDAQ() {
-      fetch('/daq/stop', { method: 'POST' })
-      .then(() => {
-        document.getElementById("statusText").textContent = "Stopped";
-      })
-      .catch(err => {
-        console.error(err);
-        alert("Error stopping DAQ: " + err.message);
-      });
+  async function StopDaq(){
+    try {
+      await RequestOk(`/daq/stop`);
+      document.getElementById("StatusText").textContent = "Stopped";
+      SetConnNote("stopped");
+    } catch(e) {
+      document.getElementById("StatusText").textContent = "Error";
+      SetConnNote("error");
+      alert(`Stop failed: ${e.message}`);
     }
+  }
 
-    function fetchLiveData() {
-      fetch('/daq/data')
-        .then(res => res.json())
-        .then(data => {
-          const box = document.getElementById("liveData");
-          if (data && data.timestamp !== undefined) {
-            box.textContent = `Time: ${data.timestamp.toFixed(3)} s\nValue: ${data.value}`;
-          } else {
-            box.textContent = "--";
-          }
-        })
-        .catch(err => {
-          console.warn("Live data error:", err);
-          document.getElementById("liveData").textContent = "--";
-        });
+  async function FetchLiveData(){
+    try {
+      const js = await RequestJson(`/daq/data`);
+      const box = document.getElementById("LiveBox");
+      if (js && js.timestamp != null) {
+        box.textContent = `Time: ${Number(js.timestamp).toFixed(3)} s\nValue: ${js.value}`;
+        SetConnNote("online");
+      } else {
+        box.textContent = "--";
+      }
+    } catch(e) {
+      document.getElementById("LiveBox").textContent = "--";
+      SetConnNote("offline");
     }
+  }
 
-    setInterval(fetchLiveData, 1000);
-  </script>
+  setInterval(FetchLiveData, 1000);
+  FetchLiveData();
+</script>
 </body>
 </html>
