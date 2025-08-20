@@ -1,196 +1,366 @@
 # app.py
+# Flask dashboard that talks to the Arduino Mega over USB serial
+# and proxies camera MJPEG plus LCR DAQ endpoints.
 
-
-from flask import Flask, render_template, request, Response
-import subprocess
-import requests
+from flask import Flask, request, jsonify, Response
+import os, time, glob, json, subprocess, threading
+import serial
+from serial.serialutil import SerialException
 from lcr_controller import LCRRecorder
 
+# ---------------------------
+# Config
+# ---------------------------
+ARDUINO_BAUD = 115200
+ARDUINO_PORT_HINTS = ["/dev/ttyACM*", "/dev/ttyUSB*"]  # Mega usually shows as ttyACM*
+SERIAL_OPEN_TIMEOUT_S = 3.0
+FIRST_OPEN_RESET_DELAY_S = 2.0   # give the Mega time to reboot after port open
+READ_TIMEOUT_S = 0.5
+WRITE_LOCK = threading.Lock()
+
+# Camera config for MJPEG pipeline (tune as needed)
+LIBCAM_CMD = [
+    "libcamera-vid",
+    "-t", "0",               # run forever
+    "--inline",              # place SPS/PPS in stream to help parsers
+    "--width", "1280",
+    "--height", "720",
+    "--framerate", "20",
+    "-o", "-",               # write to stdout
+    "-n"                     # no preview
+]
 
 app = Flask(__name__)
-ARDUINO_IP = '192.168.0.227'
 
+# One global LCR controller (uses your existing module)
+lcr = LCRRecorder()
 
-def generate_mjpeg():
-    cmd = [
-        "libcamera-vid",
-        "-t", "0",
-        "--inline",
-        "--codec", "mjpeg",
-        "--width", "640",
-        "--height", "480",
-        "-o", "-"
-    ]
+# ---------------------------
+# Arduino serial manager
+# ---------------------------
+class MegaSerial:
+    def __init__(self):
+        self.port = None
+        self.ser = None
+        self.last_open_attempt = 0.0
 
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
+    def _FindPort(self):
+        for pat in ARDUINO_PORT_HINTS:
+            for p in sorted(glob.glob(pat)):
+                return p
+        return None
+
+    def _OpenIfNeeded(self):
+        if self.ser and self.ser.is_open:
+            return
+        now = time.time()
+        if now - self.last_open_attempt < 0.5:
+            return
+        self.last_open_attempt = now
+
+        port = self._FindPort()
+        if not port:
+            raise SerialException("Arduino Mega serial port not found")
+
+        self.port = port
+        self.ser = serial.Serial(
+            port=self.port,
+            baudrate=ARDUINO_BAUD,
+            timeout=READ_TIMEOUT_S
+        )
+        # Mega resets on open; give it a moment
+        time.sleep(FIRST_OPEN_RESET_DELAY_S)
+        # flush any boot text
+        self.ser.reset_input_buffer()
+
+    def SendLine(self, line):
+        """Write a command line and return list of response lines read quickly."""
+        with WRITE_LOCK:
+            self._OpenIfNeeded()
+            if not self.ser or not self.ser.is_open:
+                raise SerialException("Serial not open")
+            # write
+            self.ser.write((line.strip() + "\n").encode("ascii"))
+            self.ser.flush()
+
+            # small wait for device to react
+            time.sleep(0.15)
+
+            # slurp available lines
+            lines = []
+            while True:
+                try:
+                    raw = self.ser.readline()
+                except SerialException:
+                    break
+                if not raw:
+                    break
+                s = raw.decode("ascii", errors="ignore").strip()
+                if s:
+                    lines.append(s)
+            return lines
+
+    def QueryJsonStatus(self):
+        """Send STATUS and try to parse JSON; return dict."""
+        lines = self.SendLine("STATUS")
+        # Find the first JSON-looking line
+        for s in lines:
+            if s.startswith("{") and s.endswith("}"):
+                try:
+                    return json.loads(s)
+                except json.JSONDecodeError:
+                    pass
+        # Fallback: return raw
+        return {"raw": lines}
+
+Mega = MegaSerial()
+
+# ---------------------------
+# MJPEG stream using libcamera-vid
+# ---------------------------
+def GenerateMjpeg():
+    # Start libcamera-vid process
+    proc = subprocess.Popen(
+        LIBCAM_CMD,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=0
+    )
 
     buffer = b""
-    try:
-        while True:
-            byte = process.stdout.read(1)
-            if not byte:
-                break
-            buffer += byte
 
-            # Check for end of JPEG frame
-            if buffer[-2:] == b'\xFF\xD9':  # JPEG EOI marker
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' +
-                       buffer + b'\r\n')
-                buffer = b""
-    except GeneratorExit:
-        process.terminate()
-        process.wait()
-    # Start libcamera-vid in MJPEG stream mode
-    cmd = [
-        "libcamera-vid",
-        "-t", "0",              # unlimited time
-        "--inline",             # required for MJPEG
-        "--codec", "mjpeg",
-        "--width", "640",
-        "--height", "480",
-        "-o", "-"               # output to stdout
-    ]
-
-
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
-
-    def find_jpeg_frames(buffer):
+    def FindJpegFrames(b):
         frames = []
-        start = 0
+        i = 0
         while True:
-            soi = buffer.find(b'\xff\xd8', start)
-            if soi == -1:
+            soi = b.find(b"\xff\xd8", i)
+            if soi < 0:
                 break
-            eoi = buffer.find(b'\xff\xd9', soi)
-            if eoi == -1:
+            eoi = b.find(b"\xff\xd9", soi + 2)
+            if eoi < 0:
                 break
-            frames.append(buffer[soi:eoi+2])
-            start = eoi + 2
-        return frames, buffer[start:]
+            frames.append(b[soi:eoi+2])
+            i = eoi + 2
+        return frames, b[i:]
 
-    buffer = b''
     try:
         while True:
-            chunk = process.stdout.read(4096)
+            chunk = proc.stdout.read(4096)
             if not chunk:
                 break
             buffer += chunk
-            frames, buffer = find_jpeg_frames(buffer)
-            for frame in frames:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' +
-                       frame + b'\r\n')
-    except GeneratorExit:
-        process.terminate()
-        process.wait()
+            frames, buffer = FindJpegFrames(buffer)
+            for f in frames:
+                yield (b"--frame\r\n"
+                       b"Content-Type: image/jpeg\r\n"
+                       b"Content-Length: " + str(len(f)).encode() + b"\r\n\r\n" +
+                       f + b"\r\n")
+    finally:
+        with contextlib.suppress(Exception):
+            proc.terminate()
+        with contextlib.suppress(Exception):
+            proc.kill()
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_mjpeg(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
+# ---------------------------
+# Routes: Arduino control
+# ---------------------------
+@app.route("/")
+def Root():
+    return "OK"
 
-
-@app.route('/')
-def index():
-    # Render the main page; the form should now have an input named "freq"
-    return render_template('index.html')
-
-@app.route('/send', methods=['POST'])
-def send():
-    # Grab the desired frequency (Hz) from the form
-    freq = request.form.get('freq', '').strip()
-    if not freq:
-        status = "ERROR: No frequency provided."
-        return render_template('index.html', status=status)
-
+@app.route("/ping")
+def Ping():
     try:
-        # Send to the new /setFreq endpoint on the Arduino
-        r = requests.get(f"http://{ARDUINO_IP}/setFreq?value={freq}", timeout=2)
-        status = r.text
+        resp = Mega.SendLine("PING")
+        return jsonify({"response": resp})
     except Exception as e:
-        status = f"ERROR: {e}"
-    return render_template('index.html', status=status)
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/stop', methods=['POST'])
-def stop():
+@app.route("/status")
+def Status():
     try:
-        r = requests.get(f"http://{ARDUINO_IP}/stop", timeout=2)
-        status = r.text
+        data = Mega.QueryJsonStatus()
+        return jsonify(data)
     except Exception as e:
-        status = f"ERROR: {e}"
-    return render_template('index.html', status=status)
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/direction', methods=['POST'])
-def direction():
-    dir_value = request.form.get('direction', '').strip().upper()
-    if dir_value not in ['CW', 'CCW']:
-        status = "ERROR: Invalid direction."
-    else:
-        try:
-            r = requests.get(f"http://{ARDUINO_IP}/setDirection?value={dir_value}", timeout=2)
-            status = r.text
-        except Exception as e:
-            status = f"ERROR: {e}"
-    return render_template('index.html', status=status)
-
-@app.route('/status')
-def status():
+@app.route("/start")
+def Start():
     try:
-        r = requests.get(f"http://{ARDUINO_IP}/status", timeout=1)
-        return r.text
-    except Exception:
-        return "STATUS:OFFLINE"
-
-# SCPI Communication for Flask Webserver
-
-from flask import Flask, request, render_template, jsonify
-
-
-lcr = LCRRecorder()
-
-@app.route("/daq")
-def daq_dashboard():
-    return render_template("daq.html")
-
-import traceback
-
-@app.route("/daq/start", methods=["POST"])
-def daq_start():
-    print("== DAQ start form data ==", request.form.to_dict())
-    try:
-        lcr.connect()
-        lcr.configure(
-            request.form["mode"],
-            float(request.form["freq"]),
-            float(request.form["voltage"]),
-            request.form["speed"]
-        )
-        lcr.start(
-            request.form["filename"],
-            float(request.form["interval"]),
-            request.form["mode"]
-        )
-        return "OK"
+        resp = Mega.SendLine("START")
+        return jsonify({"response": resp})
     except Exception as e:
-        traceback.print_exc()                # full trace to console
-        return f"ERROR: {e}", 400
+        return jsonify({"error": str(e)}), 500
 
-@app.route("/daq/stop", methods=["POST"])
-def daq_stop():
-    lcr.stop()
-    return "Stopped"
+@app.route("/stop")
+def Stop():
+    try:
+        resp = Mega.SendLine("STOP")
+        return jsonify({"response": resp})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/kill")
+def Kill():
+    try:
+        resp = Mega.SendLine("KILL")
+        return jsonify({"response": resp})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/setFreq")
+def SetFreq():
+    """Set frequency in Hz and (optionally) start."""
+    try:
+        hz = float(request.args.get("hz", ""))
+    except ValueError:
+        return jsonify({"error": "hz must be a number"}), 400
+    auto_start = request.args.get("start", "1") in ("1", "true", "True")
+    try:
+        r1 = Mega.SendLine(f"SETFREQ {hz}")
+        r2 = Mega.SendLine("START") if auto_start else []
+        return jsonify({"setfreq": r1, "start": r2})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/setRpm")
+def SetRpm():
+    """Set target RPM (optionally start)."""
+    try:
+        rpm = int(float(request.args.get("rpm", "")))
+    except ValueError:
+        return jsonify({"error": "rpm must be numeric"}), 400
+    auto_start = request.args.get("start", "0") in ("1", "true", "True")
+    try:
+        r1 = Mega.SendLine(f"SETRPM {rpm}")
+        r2 = Mega.SendLine("START") if auto_start else []
+        return jsonify({"setrpm": r1, "start": r2})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/setDirection")
+def SetDirection():
+    """value=CW|CCW|1|0"""
+    val = request.args.get("value", "")
+    if not val:
+        return jsonify({"error": "value required"}), 400
+    try:
+        r = Mega.SendLine(f"SETDIR {val}")
+        return jsonify({"response": r})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/sensor")
+def Sensor():
+    """Read DHT22 once."""
+    try:
+        r = Mega.SendLine("SENSOR?")
+        # Try to parse: "ENV 23.45 C, 40.12 %RH"
+        out = {"raw": r}
+        for line in r:
+            if line.startswith("ENV "):
+                try:
+                    # Split conservatively
+                    rest = line[4:]
+                    parts = rest.replace(" C", "").replace(" %RH", "").split(",")
+                    t = float(parts[0].strip())
+                    h = float(parts[1].strip())
+                    out = {"temp_c": t, "humidity": h}
+                except Exception:
+                    pass
+                break
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/setSteps")
+def SetSteps():
+    try:
+        n = int(request.args.get("value", ""))
+    except ValueError:
+        return jsonify({"error": "value must be integer"}), 400
+    try:
+        r = Mega.SendLine(f"SETSTEPS {n}")
+        return jsonify({"response": r})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/setMaxRpm")
+def SetMaxRpm():
+    try:
+        n = int(request.args.get("value", ""))
+    except ValueError:
+        return jsonify({"error": "value must be integer"}), 400
+    try:
+        r = Mega.SendLine(f"SETMAXRPM {n}")
+        return jsonify({"response": r})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/setRamp")
+def SetRamp():
+    try:
+        step = int(request.args.get("rpm_step", ""))
+        ms   = int(request.args.get("ms", ""))
+    except ValueError:
+        return jsonify({"error": "rpm_step and ms must be integers"}), 400
+    try:
+        r = Mega.SendLine(f"SETRAMP {step} {ms}")
+        return jsonify({"response": r})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ---------------------------
+# Routes: camera MJPEG stream
+# ---------------------------
+@app.route("/video.mjpg")
+def VideoStream():
+    return Response(GenerateMjpeg(),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+
+# ---------------------------
+# Routes: LCR recorder hooks
+# ---------------------------
+@app.route("/daq/start")
+def DaqStart():
+    file_name = request.args.get("file", "lcr_log.csv")
+    try:
+        interval = float(request.args.get("interval", "1.0"))
+    except ValueError:
+        return jsonify({"error": "interval must be numeric seconds"}), 400
+    # Kick off recorder thread if your class supports it
+    try:
+        # Expecting your LCRRecorder to have start(file_name, interval)
+        # If your signature differs, adjust here.
+        if getattr(lcr, "thread", None) and lcr.thread and lcr.thread.is_alive():
+            return jsonify({"status": "already_running"})
+        lcr.start(file_name, interval)  # type: ignore[attr-defined]
+        return jsonify({"status": "started", "file": file_name, "interval": interval})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/daq/stop")
+def DaqStop():
+    try:
+        lcr.stop()
+        return jsonify({"status": "stopping"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/daq/data")
-def daq_data():
-    data = lcr.get_last_data()
-    return jsonify({"timestamp": data[0], "value": data[1]} if data else {})
+def DaqData():
+    try:
+        data = lcr.get_last_data()
+        if data:
+            return jsonify({"timestamp": data[0], "value": data[1]})
+        return jsonify({})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-
-
-
-if __name__ == '__main__':
-    # Listen on all interfaces, port 5000
-    app.run(host='0.0.0.0', port=5000, debug=True)
-
-    
+# ---------------------------
+# Main
+# ---------------------------
+if __name__ == "__main__":
+    # Ensure dialout membership so we can open /dev/ttyACM0 without sudo
+    # On first run you might need: sudo usermod -aG dialout $USER; newgrp dialout
+    app.run(host="0.0.0.0", port=5000, debug=True)

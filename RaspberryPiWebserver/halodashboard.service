@@ -1,0 +1,18 @@
+# /etc/systemd/system/halodashboard.service
+
+[Unit]
+Description=HALO Dashboard Flask App
+After=network.target
+
+[Service]
+ExecStart=/home/admin/HALODashboard/start_dashboard.sh
+WorkingDirectory=/home/admin/HALODashboard
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+User=admin
+Environment=FLASK_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+
