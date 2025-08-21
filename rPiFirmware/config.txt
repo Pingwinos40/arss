@@ -31,6 +31,7 @@ auto_initramfs=1
 
 [cm4]
 # Enable host mode on the built-in XHCI USB controller
+# (remove this if you need legacy DWC2 or USB gadget mode)
 otg_mode=1
 
 [cm5]
@@ -65,3 +66,5 @@ dtparam=i2c_csi_dsi0=on
 # CSI1 sideband I²C (mux channel B)
 dtparam=i2c_csi_dsi1=on
 
+# Ensure modern KMS driver
+dtoverlay=vc4-kms-v3d,cma=512

@@ -2,232 +2,377 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>HALO Motor Dashboard</title>
+  <title>HALO Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    :root {
-      --bg: #0f1115;
-      --card: #151923;
-      --text: #e6e8ee;
-      --muted: #9aa3b2;
-      --accent: #6ea8fe;
-      --ok: #31c48d;
-      --warn: #f0ad4e;
-      --err: #e55353;
-      --border: #242a36;
+    :root{
+      --bg:#0f1116; --panel:#151924; --text:#e7e9ee; --muted:#aeb6c4; --accent:#3ea6ff;
+      --ok:#24c08b; --warn:#ffb020; --err:#ff5c5c; --line:#20273a; --frame:#2a3246;
     }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0; padding: 24px;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      background: var(--bg); color: var(--text);
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);
+      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial,"Noto Sans","Liberation Sans",sans-serif}
+    header{
+      padding:12px 20px;border-bottom:1px solid #22283a;background:#0d1018cc;backdrop-filter:blur(8px);
+      position:sticky;top:0;z-index:5;display:flex;gap:16px;align-items:center;justify-content:space-between;
     }
-    a { color: var(--accent); text-decoration: none; }
-    nav {
-      display: flex; gap: 20px; align-items: center;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 12px; margin-bottom: 20px;
+    .title{font-weight:600;letter-spacing:.2px}
+    .container{max-width:1200px;margin:0 auto;padding:16px}
+
+    /* Layout: Motor (top), Environment (middle), Camera (bottom) */
+    .layout{
+      display:grid;gap:16px;grid-template-columns:1fr;grid-template-areas:
+        "mot"
+        "env"
+        "cam";
     }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 16px;
+    @media (min-width:1000px){
+      .layout{
+        grid-template-columns:1fr 1fr;grid-template-areas:
+          "mot env"
+          "cam cam";
+      }
     }
-    .card {
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: 14px; padding: 16px;
+
+    .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;
+      box-shadow:0 8px 24px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.03)}
+    .panel h3{margin:0 0 10px 0;font-size:16px;font-weight:600;color:var(--muted)}
+    .badge{font-size:12px;padding:2px 8px;border-radius:999px;background:#101525;border:1px solid #22304a;color:var(--muted)}
+    .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .controls input,.controls select,.controls button,.controls label{
+      background:#0e1320;color:var(--text);border:1px solid var(--frame);border-radius:10px;padding:8px 10px
     }
-    .card h3 { margin: 0 0 12px; font-size: 1.05rem; color: var(--muted); }
-    label { display: inline-block; min-width: 140px; color: var(--muted); }
-    input, select {
-      background: #0c0f14; color: var(--text); border: 1px solid var(--border);
-      border-radius: 10px; padding: 6px 10px; min-width: 120px;
-    }
-    button {
-      background: #1f2a3b; color: var(--text); border: 1px solid var(--border);
-      border-radius: 10px; padding: 8px 12px; cursor: pointer;
-    }
-    button:hover { border-color: var(--accent); }
-    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .status-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; }
-    .ok   { background: var(--ok); }
-    .warn { background: var(--warn); }
-    .err  { background: var(--err); }
-    pre { background:#0c0f14; border:1px solid var(--border); padding:8px; border-radius:10px; overflow:auto; }
-    img { max-width: 100%; border-radius: 10px; border: 1px solid var(--border); }
-    .small { color: var(--muted); font-size: 0.9rem; }
+    .controls label{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer}
+    .controls input[type="checkbox"]{accent-color:#3ea6ff}
+    .controls button{cursor:pointer}
+
+    .motor-panel{grid-area:mot}
+    .env-panel{grid-area:env}
+    .video-panel{grid-area:cam}
+
+    .video-frame{width:100%;aspect-ratio:16/9;border-radius:12px;border:1px solid var(--frame);
+      background:#0a0c12;overflow:hidden;display:grid;place-items:center}
+    .video-frame img{width:100%;height:100%;object-fit:cover;display:block}
+
+    .uplot{background:#0a0d15;border-radius:10px;border:1px solid var(--frame)}
+    .foot{color:var(--muted);font-size:12px;text-align:right;margin-top:-4px}
+    .flex{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   </style>
+  <!-- uPlot -->
+  <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.17/dist/uPlot.min.css">
+  <script src="https://unpkg.com/uplot@1.6.17/dist/uPlot.iife.min.js"></script>
 </head>
 <body>
-  <nav>
-    <strong>HALO</strong>
-    <a href="/">Motor Dashboard</a>
-    <a href="/daq">LCR Meter DAQ</a>
-    <span id="ConnNote" class="small">Backend: connecting…</span>
-  </nav>
-
-  <div class="grid">
-    <div class="card">
-      <h3>Motor Control</h3>
-      <div class="row">
-        <label for="FreqHz">Frequency (Hz)</label>
-        <input id="FreqHz" type="number" step="0.1" value="5" />
-        <button onclick="SetFreqAndStart()">Set & Start</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <label for="RpmVal">RPM</label>
-        <input id="RpmVal" type="number" step="1" value="60" />
-        <button onclick="SetRpm()">Set</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <label for="DirVal">Direction</label>
-        <select id="DirVal">
-          <option value="CW">CW</option>
-          <option value="CCW">CCW</option>
-        </select>
-        <button onclick="SetDirection()">Apply</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <button onclick="Start()">Start</button>
-        <button onclick="Stop()">Stop</button>
-        <button onclick="Kill()">KILL</button>
-      </div>
+  <header>
+    <div class="title">HALO Dashboard</div>
+    <div class="flex">
+      <span id="MotorState" class="badge">motor: idle</span>
+      <span id="EnvBadge" class="badge">env: --.- °C / --.- %</span>
     </div>
+  </header>
 
-    <div class="card">
-      <h3>Status</h3>
-      <div class="row">
-        <span id="StatusDot" class="status-dot err"></span>
-        <div id="StatusText">OFFLINE</div>
-      </div>
-      <div class="row small" style="margin-top:8px">
-        <div>RPM(cur): <span id="RpmCur">—</span></div>
-        <div style="margin-left:12px">RPM(tgt): <span id="RpmTgt">—</span></div>
-      </div>
-      <div class="row small" style="margin-top:8px">
-        <div>Pulse Hz: <span id="PulseHz">—</span></div>
-        <div style="margin-left:12px">Dir: <span id="DirValText">—</span></div>
-      </div>
-      <div class="row small" style="margin-top:8px">
-        <div>Temp: <span id="TempText">—</span> °C</div>
-        <div style="margin-left:12px">Humidity: <span id="HumText">—</span> %</div>
-        <button style="margin-left:auto" onclick="ReadSensor()">Read</button>
-      </div>
-      <pre id="RawStatus" style="margin-top:8px; max-height:180px"></pre>
+  <main class="container">
+    <div class="layout">
+
+      <!-- Motor (TOP) -->
+      <section class="panel motor-panel">
+        <h3>Motor</h3>
+        <div class="controls">
+          <input id="RpmBox" type="number" step="1" placeholder="RPM">
+          <button id="SetRpm">Set RPM</button>
+        </div>
+        <div class="controls">
+          <input id="FreqBox" type="number" step="1" placeholder="Frequency (Hz)">
+          <button id="SetFreq">Set Hz</button>
+        </div>
+        <div class="controls">
+          <input id="StepsBox" type="number" step="1" placeholder="Steps">
+          <button id="DoSteps">Move Steps</button>
+        </div>
+        <div class="controls">
+          <select id="DirSel">
+            <option value="CW">CW</option>
+            <option value="CCW">CCW</option>
+          </select>
+          <button id="SetDir">Set Dir</button>
+        </div>
+        <div class="controls">
+          <button id="StartBtn">Start</button>
+          <button id="StopBtn">Stop</button>
+        </div>
+      </section>
+
+      <!-- Environment (MIDDLE) -->
+      <section class="panel env-panel">
+        <h3>Environment</h3>
+        <div class="controls" style="margin-bottom:8px">
+          <label>Window
+            <select id="WindowSel">
+              <option value="15">15 s</option>
+              <option value="30">30 s</option>
+              <option value="60" selected>60 s</option>
+              <option value="120">120 s</option>
+              <option value="300">300 s</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="SmoothChk" checked> Smooth</label>
+          <label><input type="checkbox" id="MarkersChk"> Markers</label>
+          <button id="ResetView">Reset View</button>
+          <button id="SaveCsvWindow">Save CSV (window)</button>
+          <button id="SaveCsvAll">Save CSV (session)</button>
+          <span id="HoverReadout" class="badge">t=-- s, T=--.- °C, RH=--.- %</span>
+        </div>
+        <div id="EnvPlot" style="height:320px;"></div>
+        <div class="foot">Wheel = zoom, drag = pan, hover = values.</div>
+      </section>
+
+      <!-- Camera (BOTTOM) -->
+      <section class="panel video-panel">
+        <h3>Camera (cam0)</h3>
+        <div class="video-frame">
+          <img id="CamView" src="/video.mjpg?ch=0" alt="Live video">
+        </div>
+        <div class="controls">
+          <button id="ReloadCam">Reload Stream</button>
+          <button id="SnapshotBtn">Snapshot</button>
+          <span class="badge" id="CamSrcBadge">source: /video.mjpg?ch=0</span>
+        </div>
+      </section>
+
     </div>
+  </main>
 
-    <div class="card">
-      <h3>Environment (live)</h3>
-      <canvas id="EnvChart" height="240"></canvas>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:16px;">
-    <h3>Video</h3>
-    <img id="Video" src="/video.mjpg" alt="Live video" />
-    <div class="small" style="margin-top:6px">Stream: /video.mjpg</div>
-  </div>
-
-<script>
-  // --- Fetch helpers with basic error handling ---
-  async function RequestJson(url) {
-    const r = await fetch(url, {cache: "no-store"});
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
-  }
-  async function RequestOk(url) {
-    const r = await fetch(url, {cache: "no-store"});
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json().catch(_ => ({}));
-  }
-
-  // --- Controls ---
-  async function SetFreqAndStart(){
-    const hz = document.getElementById("FreqHz").value || "0";
-    await RequestOk(`/setFreq?hz=${encodeURIComponent(hz)}&start=1`);
-    await RefreshStatus();
-  }
-  async function SetRpm(){
-    const rpm = document.getElementById("RpmVal").value || "0";
-    await RequestOk(`/setRpm?rpm=${encodeURIComponent(rpm)}&start=0`);
-    await RefreshStatus();
-  }
-  async function SetDirection(){
-    const dir = document.getElementById("DirVal").value;
-    await RequestOk(`/setDirection?value=${encodeURIComponent(dir)}`);
-    await RefreshStatus();
-  }
-  async function Start(){ await RequestOk(`/start`); await RefreshStatus(); }
-  async function Stop(){ await RequestOk(`/stop`); await RefreshStatus(); }
-  async function Kill(){ await RequestOk(`/kill`); await RefreshStatus(); }
-  async function ReadSensor(){
-    const js = await RequestJson(`/sensor`);
-    if (js.temp_c != null) document.getElementById("TempText").textContent = js.temp_c.toFixed(2);
-    if (js.humidity != null) document.getElementById("HumText").textContent = js.humidity.toFixed(2);
-  }
-
-  // --- Status + chart ---
-  const TempPoints = [];
-  const HumPoints  = [];
-  const TimeLabels = [];
-  const ChartCtx = document.getElementById("EnvChart").getContext("2d");
-  const EnvChart = new Chart(ChartCtx, {
-    type: "line",
-    data: {
-      labels: TimeLabels,
-      datasets: [
-        { label: "Temp (°C)", data: TempPoints, borderColor: "#f87171", tension: 0.2 },
-        { label: "Humidity (%)", data: HumPoints, borderColor: "#60a5fa", tension: 0.2 }
-      ]
-    },
-    options: {
-      animation: false, responsive: true, maintainAspectRatio: false,
-      scales: { y: { suggestedMin: 0, suggestedMax: 100 } }
+  <script>
+    // ---------- helpers ----------
+    async function GET(u){ const r = await fetch(u); return r.json(); }
+    function downloadCsv(name, rows){
+      const blob = new Blob([rows.join("\n")], {type:"text/csv"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+      URL.revokeObjectURL(url);
     }
-  });
 
-  function PushEnvPoint(t, h){
-    const ts = new Date().toLocaleTimeString();
-    TimeLabels.push(ts);
-    TempPoints.push(t);
-    HumPoints.push(h);
-    if (TimeLabels.length > 60) { TimeLabels.shift(); TempPoints.shift(); HumPoints.shift(); }
-    EnvChart.update();
-  }
-
-  function SetConnNote(s){ document.getElementById("ConnNote").textContent = `Backend: ${s}`; }
-  function SetStatusBadge(state){
-    const dot = document.getElementById("StatusDot");
-    dot.classList.remove("ok", "warn", "err");
-    if (state === "RUNNING") dot.classList.add("ok");
-    else if (state === "STOPPED") dot.classList.add("warn");
-    else dot.classList.add("err");
-  }
-
-  async function RefreshStatus(){
-    try {
-      const js = await RequestJson(`/status`);
-      SetConnNote("online");
-      document.getElementById("StatusText").textContent = js.status || "UNKNOWN";
-      SetStatusBadge(js.status || "UNKNOWN");
-      document.getElementById("RpmCur").textContent = js.rpm_cur != null ? js.rpm_cur.toFixed(2) : "—";
-      document.getElementById("RpmTgt").textContent = js.rpm_tgt != null ? js.rpm_tgt.toFixed(2) : "—";
-      document.getElementById("PulseHz").textContent = js.pulse_hz != null ? js.pulse_hz : "—";
-      document.getElementById("DirValText").textContent = js.dir || "—";
-      if (js.temp_c != null) document.getElementById("TempText").textContent = js.temp_c.toFixed(2);
-      if (js.humidity != null) document.getElementById("HumText").textContent = js.humidity.toFixed(2);
-      document.getElementById("RawStatus").textContent = JSON.stringify(js, null, 2);
-      if (js.temp_c != null && js.humidity != null) PushEnvPoint(js.temp_c, js.humidity);
-    } catch (e) {
-      SetConnNote("offline");
-      document.getElementById("StatusText").textContent = "OFFLINE";
-      SetStatusBadge("OFFLINE");
+    // ---------- motor ----------
+    function setBadgeRunning(running){
+      const el = document.getElementById("MotorState");
+      el.textContent = running ? "motor: running" : "motor: idle";
+      el.style.background = running ? "#0e1f18" : "#101525";
+      el.style.borderColor = running ? "#1f614a" : "#22304a";
     }
-  }
+    async function refreshStatus(){
+      try{
+        const s = await GET("/status");
+        setBadgeRunning(!!s.running);
+      }catch(e){}
+    }
+    setInterval(refreshStatus,1000);
 
-  setInterval(RefreshStatus, 1000);
-  RefreshStatus();
-</script>
+    document.getElementById("SetRpm").onclick = async ()=>{
+      const rpm = parseFloat(document.getElementById("RpmBox").value || "0");
+      if(rpm>0) await GET(`/setRpm?rpm=${rpm}&start=1`); refreshStatus();
+    };
+    document.getElementById("SetFreq").onclick = async ()=>{
+      const hz = parseFloat(document.getElementById("FreqBox").value || "0");
+      if(hz>0) await GET(`/setFreq?hz=${hz}&start=1`); refreshStatus();
+    };
+    document.getElementById("DoSteps").onclick = async ()=>{
+      const n = parseInt(document.getElementById("StepsBox").value || "0",10);
+      if(n>0) await GET(`/setSteps?value=${n}`); refreshStatus();
+    };
+    document.getElementById("SetDir").onclick = async ()=>{
+      const v = document.getElementById("DirSel").value;
+      await GET(`/setDirection?value=${encodeURIComponent(v)}`); refreshStatus();
+    };
+    document.getElementById("StartBtn").onclick = async ()=>{ await GET("/start"); refreshStatus(); };
+    document.getElementById("StopBtn").onclick  = async ()=>{ await GET("/stop");  refreshStatus(); };
+
+    // ---------- camera (single cam0) ----------
+    const camImg = document.getElementById("CamView");
+    const camSrcBadge = document.getElementById("CamSrcBadge");
+    function reloadCam(){
+      const u = "/video.mjpg?ch=0&ts="+Date.now();
+      camImg.src = u; camSrcBadge.textContent = "source: /video.mjpg?ch=0";
+    }
+    document.getElementById("ReloadCam").onclick = reloadCam;
+    document.getElementById("SnapshotBtn").onclick = ()=>{
+      const u = "/snapshot.jpg?ch=0&ts="+Date.now();
+      const a = document.createElement("a"); a.href = u; a.download = "snapshot.jpg"; a.click();
+    };
+    camImg.addEventListener("error", () => setTimeout(reloadCam, 800));
+
+    // ---------- environment plot (line, configurable window) ----------
+    const plotDiv = document.getElementById("EnvPlot");
+    const hoverReadout = document.getElementById("HoverReadout");
+    const envBadge = document.getElementById("EnvBadge");
+    const selWindow = document.getElementById("WindowSel");
+    const chkSmooth = document.getElementById("SmoothChk");
+    const chkMarkers = document.getElementById("MarkersChk");
+
+    const pollMs = 1000;
+    let windowS = parseInt(selWindow.value, 10);
+
+    // live window arrays
+    const X  = [];   // seconds since start
+    const TC = [];
+    const RH = [];
+
+    // session arrays
+    const Xall = [];
+    const Tall = [];
+    const RHall = [];
+
+    const t0 = performance.now();
+    const nowS = () => (performance.now() - t0)/1000;
+
+    let xFixMin = null, xFixMax = null;
+
+    function makeSeries(){
+      return [
+        {},
+        {
+          label:"Temp (°C)",
+          width:2,
+          points:{show:chkMarkers.checked},
+          paths: chkSmooth.checked ? uPlot.paths.spline() : null, // null -> straight line
+          spanGaps:false
+        },
+        {
+          label:"RH (%)",
+          width:2,
+          scale:"y2",
+          points:{show:chkMarkers.checked},
+          paths: chkSmooth.checked ? uPlot.paths.spline() : null,
+          spanGaps:false
+        },
+      ];
+    }
+
+    function buildPlot(){
+      return new uPlot({
+        width: plotDiv.clientWidth,
+        height: 320,
+        scales: { x:{time:false}, y:{auto:true}, y2:{auto:true} },
+        series: makeSeries(),
+        axes: [
+          {label:"t (s)"},
+          {label:"°C"},
+          {label:"% RH", scale:"y2"},
+        ],
+        hooks: {
+          setCursor: [(u)=>{
+            const i = u.cursor.idx;
+            if(i==null || i<0 || i>=X.length) return;
+            const s = (X[i] ?? 0).toFixed(1);
+            const t = TC[i] == null ? "--.-" : TC[i].toFixed(1);
+            const h = RH[i] == null ? "--.-" : RH[i].toFixed(1);
+            hoverReadout.textContent = `t=${s} s, T=${t} °C, RH=${h} %`;
+          }],
+        },
+        plugins: [ (u)=>{
+          // wheel zoom
+          plotDiv.addEventListener("wheel",(e)=>{
+            e.preventDefault();
+            const {left} = u.bbox;
+            const xu = u.posToVal(e.clientX-left,"x");
+            const f = e.deltaY<0 ? 0.9 : 1.1;
+            const [min,max] = u.scales.x.range(u,"x");
+            xFixMin = xu - (xu-min)*f;
+            xFixMax = xu + (max-xu)*f;
+            u.setScale("x",{min:xFixMin,max:xFixMax});
+          },{passive:false});
+          // drag pan
+          let dragging=false, lastX=0;
+          plotDiv.addEventListener("mousedown",(e)=>{
+            dragging=true; lastX=e.clientX;
+            window.addEventListener("mouseup",()=>dragging=false,{once:true});
+          });
+          window.addEventListener("mousemove",(e)=>{
+            if(!dragging) return;
+            const dx = e.clientX-lastX; lastX=e.clientX;
+            const valDx = u.posToVal(0,"x") - u.posToVal(dx,"x");
+            const [min,max] = u.scales.x.range(u,"x");
+            xFixMin = (xFixMin ?? min) + valDx;
+            xFixMax = (xFixMax ?? max) + valDx;
+            u.setScale("x",{min:xFixMin,max:xFixMax});
+          });
+        }]
+      }, [X,TC,RH], plotDiv);
+    }
+
+    let uplot = buildPlot();
+
+    function rebuildPlotKeepingData(){
+      const xmin = uplot.scales.x.min, xmax = uplot.scales.x.max;
+      uplot.destroy();
+      uplot = buildPlot();
+      uplot.setData([X,TC,RH]);
+      if (xmin!=null && xmax!=null) uplot.setScale("x",{min:xmin,max:xmax});
+    }
+
+    // resize handler (debounced)
+    let rAF = 0;
+    window.addEventListener("resize", ()=>{
+      cancelAnimationFrame(rAF);
+      rAF = requestAnimationFrame(()=>uplot.setSize({width:plotDiv.clientWidth,height:320}));
+    });
+
+    function pushEnvPoint(T,H){
+      const t = nowS();
+      X.push(t); TC.push(T); RH.push(H);
+      Xall.push(t); Tall.push(T); RHall.push(H);
+
+      // keep window
+      while (X.length && (t - X[0]) > windowS) { X.shift(); TC.shift(); RH.shift(); }
+
+      // auto window unless user fixed x
+      if (xFixMin==null || xFixMax==null){
+        const xmin = Math.max(0, t - windowS);
+        const xmax = Math.max(xmin + 1, t);
+        uplot.setScale("x", {min:xmin, max:xmax});
+      }
+      uplot.setData([X,TC,RH]);
+    }
+
+    async function pollEnv(){
+      try{
+        const j = await GET("/sensor");
+        if (j && typeof j.temp_c === "number" && typeof j.humidity === "number"){
+          pushEnvPoint(j.temp_c, j.humidity);
+          envBadge.textContent = `env: ${j.temp_c.toFixed(1)} °C / ${j.humidity.toFixed(1)} %`;
+        }
+      }catch(e){}
+    }
+    setInterval(pollEnv, pollMs);
+    pollEnv();
+
+    // controls
+    document.getElementById("ResetView").onclick = ()=>{
+      xFixMin = xFixMax = null;
+      if (X.length){
+        const t = X[X.length-1];
+        const xmin = Math.max(0, t - windowS);
+        const xmax = Math.max(xmin + 1, t);
+        uplot.setScale("x", {min:xmin, max:xmax});
+      }
+    };
+
+    document.getElementById("SaveCsvWindow").onclick = ()=>{
+      const rows = ["t_s,temp_c,humidity"];
+      for(let i=0;i<X.length;i++) rows.push(`${X[i].toFixed(3)},${TC[i]??""},${RH[i]??""}`);
+      downloadCsv(`environment_last${windowS}s.csv`, rows);
+    };
+    document.getElementById("SaveCsvAll").onclick = ()=>{
+      const rows = ["t_s,temp_c,humidity"];
+      for(let i=0;i<Xall.length;i++) rows.push(`${Xall[i].toFixed(3)},${Tall[i]??""},${RHall[i]??""}`);
+      downloadCsv("environment_session.csv", rows);
+    };
+
+    selWindow.addEventListener("change", ()=>{
+      windowS = parseInt(selWindow.value,10);
+      document.getElementById("ResetView").click();
+    });
+    chkSmooth.addEventListener("change", rebuildPlotKeepingData);
+    chkMarkers.addEventListener("change", rebuildPlotKeepingData);
+  </script>
 </body>
 </html>

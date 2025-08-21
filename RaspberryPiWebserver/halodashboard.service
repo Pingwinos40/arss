@@ -1,18 +1,27 @@
 # /etc/systemd/system/halodashboard.service
 
 [Unit]
-Description=HALO Dashboard Flask App
-After=network.target
+Description=HALO Dashboard
+After=network-online.target dev-video0.device
+Wants=network-online.target
 
 [Service]
-ExecStart=/home/admin/HALODashboard/start_dashboard.sh
-WorkingDirectory=/home/admin/HALODashboard
-StandardOutput=inherit
-StandardError=inherit
-Restart=always
 User=admin
-Environment=FLASK_ENV=production
+# ensure access to /dev/video* and GPIO without sudo
+SupplementaryGroups=video gpio dialout tty
+WorkingDirectory=/home/admin/HALODashboard
+Environment="PATH=/home/admin/HALODashboard/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+Environment=PYTHONUNBUFFERED=1
+# small settle so CSI + mux are ready
+ExecStartPre=/bin/sleep 2
+# pick a default mux channel on boot (Cam 0)
+ExecStartPre=/usr/bin/gpioset gpiochip0 4=0 17=0 18=1
+ExecStart=/home/admin/HALODashboard/venv/bin/python /home/admin/HALODashboard/app.py
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=30
 
 [Install]
 WantedBy=multi-user.target
+
 

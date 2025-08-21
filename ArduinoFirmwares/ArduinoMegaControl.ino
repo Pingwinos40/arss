@@ -1,380 +1,329 @@
-/*
-  ArduinoMegaControl.ino
-  Hardware PWM step pulses + direction + optional DHT22 on Arduino Mega 2560.
-
-  Pins:
-    PUL+  -> D11 (OC1A, Timer1 hardware PWM)
-    DIR+  -> D33
-    DHT22 -> D53  (use ~10k pull-up to 5V on data)
-
-  Commands (send ASCII lines ending with '\n'):
-    HELP
-    PING
-    SETRPM <rpm>
-    SETFREQ <hz>
-    SETDIR <CW|CCW|0|1>
-    START
-    STOP
-    KILL
-    STATUS
-    SENSOR?
-    SETSTEPS <steps_per_rev>         (default 6400)
-    SETMAXRPM <rpm>                  (default 600)
-    SETRAMP <rpm_step> <ms_interval> (default 5 50)
-*/
+// ArduinoMegaControl.ino
+// Arduino Mega 2560: hardware pulse output on D11 (Timer1 OC1A)
+// ENV sensor: DHT22 on D53
+// DIR: D33
+// Serial command set matches the Flask app.
 
 #include <Arduino.h>
 #include <DHT.h>
 #include <math.h>
-#include <stdint.h>
-#include <string.h>
-#include <ctype.h>
-#include <stdlib.h>
 
-// ---------- Forward declarations so Arduino's auto-prototypes compile ----------
-enum Prescale : uint16_t;
-struct T1Config;
-// (function prototypes are optional but harmless)
-struct T1Config ComputeT1ForHz(uint32_t hz);
-void ApplyT1Config(const T1Config& cfg);
+// ---------------- Pin Map ----------------
+static const uint8_t PIN_PUL = 11;  // D11 = OC1A (Timer1)
+static const uint8_t PIN_DIR = 33;  // D33 = direction
+static const uint8_t PIN_ENV = 53;  // D53 = DHT22 data
 
-// ================== User Pins ==================
-static const uint8_t PulPin = 11;  // OC1A hardware PWM
-static const uint8_t DirPin = 33;  // Direction
-static const uint8_t EnvPin = 53;  // DHT22
-
-// ================== DHT ========================
+// ---------------- DHT ----------------
 #define DHTTYPE DHT22
-DHT Dht(EnvPin, DHTTYPE);
-float LastTempC = NAN, LastHumidity = NAN;
+DHT dht(PIN_ENV, DHTTYPE);
 
-// ================== Motion Params ==============
-volatile uint32_t StepsPerRevolution = 6400; // microsteps per rev
-volatile uint16_t MaxRpm = 600;
-volatile uint16_t RpmStep = 5;       // ramp delta per tick
-volatile uint16_t RampIntervalMs = 50;
+// ---------------- Motion State ----------------
+volatile bool     gRunning = false;
+volatile uint32_t gToggleCount = 0;        // compare-match toggles on OC1A
+volatile uint32_t gToggleTarget = 0;       // goal toggles when SETSTEPS is used
+volatile bool     gUseTarget = false;      // whether to stop after N steps
 
-volatile float TargetRpm = 0.0f;
-volatile float CurrentRpm = 0.0f;
-volatile uint32_t PulseHz = 0;
+// Frequency / RPM bookkeeping (not volatile; read/written under stop/start)
+double   gCurrentHz = 0.0;
+uint16_t gCurrentOCR1A = 0;
+uint8_t  gCurrentCSBits = 0; // CS10..12
+long     gPulsesPerRev = 200; // set with SETPPR; default full-step 200
+long     gMaxRPM = 1200;      // stored; not enforced here
+int      gDir = 0;            // 0 = CCW, 1 = CW (arbitrary convention)
 
-volatile bool MotorRunning = false;     // actively producing pulses
-volatile bool OutputConnected = false;  // OC1A routed to D11
+// Simple ramp storage (not enforced in this minimal build)
+int gRampRpmStep = 0;
+int gRampMs = 0;
 
-// ================== Serial Parsing =============
-static const size_t CmdBufferSize = 96;
-char CmdBuffer[CmdBufferSize];
-size_t CmdLen = 0;
+// ENV cache to avoid slow reads on every STATUS
+unsigned long gLastEnvMs = 0;
+float gLastTempC = NAN, gLastRH = NAN;
 
-// ================== Small Helpers ==============
-static inline float ClampF(float v, float lo, float hi) {
+// ---------------- Timer1 helpers ----------------
+// Compute Timer1 CTC toggle config for desired Hz on OC1A.
+// f = F_CPU / (2 * prescaler * (1 + OCR1A))
+// Returns true if configured; fills OCR1A and CS bits (CS10..12).
+bool ComputeT1ForHz(double hz, uint16_t &ocrOut, uint8_t &csBitsOut) {
+  if (hz <= 0.1) hz = 0.1;
+  const struct Presc { uint16_t presc; uint8_t csBits; } table[] = {
+    {1,   _BV(CS10)},
+    {8,   _BV(CS11)},
+    {64,  _BV(CS11)|_BV(CS10)},
+    {256, _BV(CS12)},
+    {1024,_BV(CS12)|_BV(CS10)},
+  };
+  for (auto &p : table) {
+    double ocrf = (F_CPU / (2.0 * (double)p.presc * hz)) - 1.0;
+    if (ocrf < 0) continue;
+    uint32_t ocr = (uint32_t)lround(ocrf);
+    if (ocr <= 65535) {
+      if (ocr == 0) ocr = 1; // keep clean 50% toggle
+      ocrOut = (uint16_t)ocr;
+      csBitsOut = p.csBits;
+      return true;
+    }
+  }
+  // If we get here, requested Hz is too low; force max divider
+  uint16_t presc = 1024;
+  double ocrf = (F_CPU / (2.0 * (double)presc * hz)) - 1.0;
+  if (ocrf < 1) ocrf = 1;
+  uint32_t ocr = (uint32_t)lround(ocrf);
+  if (ocr > 65535) ocr = 65535;
+  ocrOut = (uint16_t)ocr;
+  csBitsOut = _BV(CS12)|_BV(CS10);
+  return true;
+}
+
+// Apply Timer1 config but DO NOT start toggling OC1A yet.
+void ApplyT1(uint16_t ocr, uint8_t csBits) {
+  // Stop output toggling while reconfiguring
+  TCCR1A &= ~_BV(COM1A0); // toggle off
+  gRunning = false;
+
+  // CTC mode, TOP=OCR1A
+  // WGM13:0 = 0100 -> WGM12=1, others 0
+  TCCR1A &= ~(_BV(WGM11) | _BV(WGM10));
+  TCCR1B &= ~_BV(WGM13);
+  TCCR1B |= _BV(WGM12);
+
+  // Load compare
+  OCR1A = ocr;
+
+  // Clock select
+  TCCR1B &= ~(_BV(CS12) | _BV(CS11) | _BV(CS10));
+  TCCR1B |= csBits;
+
+  // Enable compare A interrupt (used for SETSTEPS counting)
+  TIMSK1 |= _BV(OCIE1A);
+}
+
+// Start toggling OC1A (D11). 50% duty through hardware.
+void StartPulseOutput() {
+  // Ensure pin is output
+  pinMode(PIN_PUL, OUTPUT);
+  // Toggle OC1A on compare
+  TCCR1A |= _BV(COM1A0);
+  gRunning = true;
+}
+
+// Stop toggling OC1A.
+void StopPulseOutput() {
+  TCCR1A &= ~_BV(COM1A0);
+  gRunning = false;
+  gUseTarget = false;
+}
+
+// Safe setter for frequency (does not force start)
+void SetPulseHz(double hz) {
+  // Limit to a sane band for typical stepper drivers
+  if (hz < 0.5) hz = 0.5;
+  if (hz > 50000.0) hz = 50000.0;
+
+  uint16_t ocr;
+  uint8_t  cs;
+  ComputeT1ForHz(hz, ocr, cs);
+  ApplyT1(ocr, cs);
+  gCurrentHz = hz;
+  gCurrentOCR1A = ocr;
+  gCurrentCSBits = cs;
+}
+
+// Count toggles for SETSTEPS and stop at target.
+ISR(TIMER1_COMPA_vect) {
+  if (!gUseTarget) return;
+  gToggleCount++;
+  if (gToggleCount >= gToggleTarget) {
+    // Stop on next ISR context switch
+    TCCR1A &= ~_BV(COM1A0);
+    gRunning = false;
+    gUseTarget = false;
+  }
+}
+
+// ---------------- Utils ----------------
+static inline long ClampLong(long v, long lo, long hi) {
   if (v < lo) return lo;
   if (v > hi) return hi;
   return v;
 }
-static inline bool NearlyEqualF(float a, float b, float eps) {
-  return fabsf(a - b) <= eps;
+
+void UpdateEnvCache() {
+  unsigned long now = millis();
+  if (now - gLastEnvMs < 1000) return; // <=1 Hz reads; DHT is slow
+  gLastEnvMs = now;
+  float t = dht.readTemperature(); // C
+  float h = dht.readHumidity();
+  if (!isnan(t)) gLastTempC = t;
+  if (!isnan(h)) gLastRH = h;
 }
 
-// ================== Timer1 Helpers =============
-// Timer1 Fast PWM, TOP = ICR1, f = F_CPU / (N * (1 + ICR1))
-enum Prescale : uint16_t { PS1=1, PS8=8, PS64=64, PS256=256, PS1024=1024 };
+// ---------------- Command Handling ----------------
+void PrintStatus() {
+  UpdateEnvCache();
+  // Steps remaining when in targeted move:
+  uint32_t stepsRemain = 0;
+  if (gUseTarget) {
+    uint32_t togglesDone = gToggleCount;
+    uint32_t tgt = gToggleTarget;
+    if (togglesDone >= tgt) stepsRemain = 0;
+    else                   stepsRemain = (tgt - togglesDone) / 2U;
+  }
 
-struct T1Config {
-  uint16_t Icr1;
-  Prescale Ps;
-  bool Valid;
-};
+  // Compute RPM from Hz if PPR > 0
+  double rpm = (gPulsesPerRev > 0) ? (gCurrentHz * 60.0 / (double)gPulsesPerRev) : 0.0;
 
-T1Config ComputeT1ForHz(uint32_t hz) {
-  T1Config cfg; cfg.Icr1 = 0; cfg.Ps = PS1; cfg.Valid = false;
-  if (hz == 0) return cfg;
+  Serial.print("{\"running\":");
+  Serial.print(gRunning ? "true" : "false");
+  Serial.print(",\"hz\":");     Serial.print(gCurrentHz, 3);
+  Serial.print(",\"rpm\":");    Serial.print(rpm, 2);
+  Serial.print(",\"dir\":");    Serial.print(gDir);
+  Serial.print(",\"ppr\":");    Serial.print(gPulsesPerRev);
+  Serial.print(",\"steps_remaining\":"); Serial.print(stepsRemain);
+  Serial.print(",\"env\":{");
+  Serial.print("\"temp_c\":");  if (isnan(gLastTempC)) Serial.print("null"); else Serial.print(gLastTempC, 1);
+  Serial.print(",\"humidity\":"); if (isnan(gLastRH)) Serial.print("null"); else Serial.print(gLastRH, 1);
+  Serial.print("}}");
+  Serial.println();
+}
 
-  const uint32_t fcpu = F_CPU;
-  const Prescale choices[5] = { PS1, PS8, PS64, PS256, PS1024 };
+void HandleLine(char *line) {
+  // Trim leading spaces
+  while (*line == ' ' || *line == '\t') line++;
+  if (*line == 0) return;
 
-  for (uint8_t i = 0; i < 5; i++) {
-    uint32_t denom = (uint32_t)choices[i] * hz;
-    if (!denom) continue;
-    uint32_t icr = (fcpu / denom);
-    if (icr > 0) icr -= 1;
-    if (icr >= 2 && icr <= 65535UL) {
-      cfg.Icr1 = (uint16_t)icr;
-      cfg.Ps = choices[i];
-      cfg.Valid = true;
-      return cfg;
+  if (!strcmp(line, "PING")) {
+    Serial.println("PONG");
+    return;
+  }
+  if (!strcmp(line, "STATUS")) {
+    PrintStatus();
+    return;
+  }
+  if (!strcmp(line, "START")) {
+    StartPulseOutput();
+    Serial.println("OK START");
+    return;
+  }
+  if (!strcmp(line, "STOP") || !strcmp(line, "KILL")) {
+    StopPulseOutput();
+    Serial.println("OK STOP");
+    return;
+  }
+  if (!strncmp(line, "SETFREQ", 7)) {
+    double hz = atof(line + 7);
+    SetPulseHz(hz);
+    Serial.print("OK SETFREQ "); Serial.println(gCurrentHz, 3);
+    return;
+  }
+  if (!strncmp(line, "SETRPM", 6)) {
+    double rpm = atof(line + 6);
+    rpm = max(0.0, rpm);
+    double hz = rpm * (double)gPulsesPerRev / 60.0;
+    SetPulseHz(hz);
+    Serial.print("OK SETRPM "); Serial.print(rpm, 2);
+    Serial.print(" Hz=");        Serial.println(gCurrentHz, 3);
+    return;
+  }
+  if (!strncmp(line, "SETPPR", 6)) {
+    long ppr = atol(line + 6);
+    gPulsesPerRev = ClampLong(ppr, 1, 200000);
+    Serial.print("OK SETPPR "); Serial.println(gPulsesPerRev);
+    return;
+  }
+  if (!strncmp(line, "SETDIR", 6)) {
+    const char *p = line + 6;
+    while (*p == ' ' || *p == '\t') p++;
+    int val = 0;
+    if (!strncasecmp(p, "CW", 2) || *p == '1' || *p == '+') val = 1;
+    else val = 0;
+    gDir = val;
+    digitalWrite(PIN_DIR, val ? HIGH : LOW);
+    Serial.print("OK SETDIR "); Serial.println(val);
+    return;
+  }
+  if (!strncmp(line, "SETSTEPS", 8)) {
+    long steps = atol(line + 8);
+    steps = ClampLong(steps, 0, 2000000000L);
+    if (steps <= 0) {
+      StopPulseOutput();
+      Serial.println("OK SETSTEPS 0");
+      return;
     }
+    noInterrupts();
+    gToggleCount = 0;
+    gToggleTarget = (uint32_t)steps * 2UL; // each pulse is 2 toggles
+    gUseTarget = true;
+    interrupts();
+    StartPulseOutput();
+    Serial.print("OK SETSTEPS "); Serial.println(steps);
+    return;
   }
-
-  // Fallback clamp with largest prescaler
-  uint32_t denom = (uint32_t)PS1024 * hz;
-  if (denom) {
-    uint32_t icr = (fcpu / denom);
-    if (icr > 0) icr -= 1;
-    if (icr < 1) icr = 1;
-    if (icr > 65535UL) icr = 65535UL;
-    cfg.Icr1 = (uint16_t)icr;
-    cfg.Ps = PS1024;
-    cfg.Valid = true;
+  if (!strncmp(line, "SETMAXRPM", 9)) {
+    long rpm = atol(line + 9);
+    gMaxRPM = ClampLong(rpm, 1, 100000);
+    Serial.print("OK SETMAXRPM "); Serial.println(gMaxRPM);
+    return;
   }
-  return cfg;
-}
-
-void DisconnectPwm() {
-  // Disconnect OC1A from pin and force LOW.
-  TCCR1A &= ~((1 << COM1A1) | (1 << COM1A0));
-  pinMode(PulPin, OUTPUT);
-  digitalWrite(PulPin, LOW);
-  OutputConnected = false;
-}
-
-void ConnectPwmNonInverting() {
-  // Non-inverting OC1A output
-  TCCR1A = (TCCR1A & ~((1 << COM1A1) | (1 << COM1A0))) | (1 << COM1A1);
-  OutputConnected = true;
-}
-
-void ApplyT1Config(const T1Config& cfg) {
-  if (!cfg.Valid) {
-    TCCR1A = 0;
-    TCCR1B = 0;
-    TCNT1  = 0;
-    DisconnectPwm();
+  if (!strncmp(line, "SETRAMP", 7)) {
+    int rs = 0, ms = 0;
+    sscanf(line + 7, "%d %d", &rs, &ms);
+    gRampRpmStep = max(0, rs);
+    gRampMs = max(0, ms);
+    Serial.print("OK SETRAMP "); Serial.print(gRampRpmStep);
+    Serial.print(" "); Serial.println(gRampMs);
+    return;
+  }
+  if (!strcmp(line, "SENSOR?")) {
+    UpdateEnvCache();
+    Serial.print("ENV ");
+    if (isnan(gLastTempC)) Serial.print("nan"); else Serial.print(gLastTempC, 1);
+    Serial.print(", ");
+    if (isnan(gLastRH)) Serial.print("nan"); else Serial.print(gLastRH, 1);
+    Serial.println(" %RH");
     return;
   }
 
-  // Stop counter while reconfiguring
+  Serial.println("ERR?");
+}
+
+// ---------------- Setup / Loop ----------------
+void setup() {
+  pinMode(PIN_PUL, OUTPUT);
+  digitalWrite(PIN_PUL, LOW);
+  pinMode(PIN_DIR, OUTPUT);
+  digitalWrite(PIN_DIR, LOW);
+
+  dht.begin();
+
+  // Timer1 init (CTC, stopped)
   TCCR1A = 0;
   TCCR1B = 0;
-  TCNT1  = 0;
+  TIMSK1 = 0;
+  SetPulseHz(1000.0); // default 1 kHz ready
 
-  // Mode 14: Fast PWM, TOP = ICR1 (WGM13:0 = 1110)
-  TCCR1A |= (1 << WGM11);
-  TCCR1B |= (1 << WGM13) | (1 << WGM12);
-
-  ICR1 = cfg.Icr1;
-
-  // 50% duty
-  uint32_t topPlus1 = (uint32_t)cfg.Icr1 + 1;
-  OCR1A = (uint16_t)(topPlus1 / 2);
-
-  // Prescaler
-  switch (cfg.Ps) {
-    case PS1:    TCCR1B |= (1 << CS10); break;
-    case PS8:    TCCR1B |= (1 << CS11); break;
-    case PS64:   TCCR1B |= (1 << CS11) | (1 << CS10); break;
-    case PS256:  TCCR1B |= (1 << CS12); break;
-    case PS1024: TCCR1B |= (1 << CS12) | (1 << CS10); break;
-  }
-}
-
-void UpdateFromCurrentRpm() {
-  float rpm = CurrentRpm;
-  uint32_t hz = (rpm <= 0.0f) ? 0u : (uint32_t)((StepsPerRevolution * rpm) / 60.0f + 0.5f);
-  PulseHz = hz;
-
-  T1Config cfg = ComputeT1ForHz(hz);
-  ApplyT1Config(cfg);
-
-  if (hz == 0) {
-    DisconnectPwm();
-  } else if (!OutputConnected && MotorRunning) {
-    ConnectPwmNonInverting();
-  }
-}
-
-// ================== Direction & Ramping =====================
-void SetDirection(bool cw) { digitalWrite(DirPin, cw ? HIGH : LOW); }
-
-void SetTargetRpm(float rpm) {
-  rpm = ClampF(rpm, 0.0f, (float)MaxRpm);
-  TargetRpm = rpm;
-}
-
-void SetCurrentRpm(float rpm) {
-  rpm = ClampF(rpm, 0.0f, (float)MaxRpm);
-  CurrentRpm = rpm;
-  UpdateFromCurrentRpm();
-}
-
-unsigned long LastRampTick = 0;
-void ServiceRamp() {
-  unsigned long now = millis();
-  if (now - LastRampTick < RampIntervalMs) return;
-  LastRampTick = now;
-
-  float cur = CurrentRpm, tgt = TargetRpm;
-  if (NearlyEqualF(cur, tgt, 1e-3f)) {
-    if (tgt <= 0.0f) {
-      MotorRunning = false;
-      DisconnectPwm();
-    }
-    return;
-  }
-  float step = (tgt > cur) ? (float)RpmStep : -(float)RpmStep;
-  float next = cur + step;
-  if ((step > 0 && next > tgt) || (step < 0 && next < tgt)) next = tgt;
-  if (next > 0.0f) MotorRunning = true;
-  SetCurrentRpm(next);
-}
-
-// ================== Env Sensor ==============================
-bool ReadEnvOnce(float& tC, float& h) {
-  float hR = Dht.readHumidity();
-  float t  = Dht.readTemperature();
-  if (isnan(hR) || isnan(t)) return false;
-  tC = t; h = hR; return true;
-}
-
-// ================== Serial Helpers ==========================
-void PrintHelp() {
-  Serial.println(F("OK CMDS: HELP, PING, SETRPM <rpm>, SETFREQ <hz>, SETDIR <CW|CCW|0|1>, START, STOP, KILL, STATUS, SENSOR?, SETSTEPS <n>, SETMAXRPM <n>, SETRAMP <rpm_step> <ms>"));
-}
-
-void PrintStatus() {
-  Serial.print(F("{\"status\":\""));
-  Serial.print(MotorRunning ? F("RUNNING") : F("STOPPED"));
-  Serial.print(F("\",\"rpm_cur\":")); Serial.print(CurrentRpm, 3);
-  Serial.print(F(",\"rpm_tgt\":"));  Serial.print(TargetRpm, 3);
-  Serial.print(F(",\"pulse_hz\":")); Serial.print(PulseHz);
-  Serial.print(F(",\"dir\":\""));    Serial.print((digitalRead(DirPin)==HIGH)?F("CW"):F("CCW"));
-  Serial.print(F("\",\"temp_c\":")); if (isnan(LastTempC)) Serial.print(F("null")); else Serial.print(LastTempC, 2);
-  Serial.print(F(",\"humidity\":")); if (isnan(LastHumidity)) Serial.print(F("null")); else Serial.print(LastHumidity, 2);
-  Serial.println(F("}"));
-}
-
-static void TrimLeading(char*& p) { while (*p==' ' || *p=='\t') ++p; }
-
-void HandleCommand(char* line) {
-  // Uppercase the command keyword only (first token) for easy matching
-  char* p = line; TrimLeading(p);
-  char* end = p;
-  while (*end && *end!=' ' && *end!='\t' && *end!='\r' && *end!='\n') { *end = toupper(*end); ++end; }
-  char saved = *end; *end = '\0';
-  const char* cmd = p;
-  char* args = end; *end = saved;
-
-  if (!strcmp(cmd, "HELP"))   { PrintHelp(); return; }
-  if (!strcmp(cmd, "PING"))   { Serial.println(F("PONG")); return; }
-
-  if (!strcmp(cmd, "START"))  {
-    if (TargetRpm > 0.0f) { MotorRunning = true; UpdateFromCurrentRpm(); ConnectPwmNonInverting(); }
-    Serial.println(F("OK")); return;
-  }
-  if (!strcmp(cmd, "STOP"))   { SetTargetRpm(0.0f); Serial.println(F("OK")); return; }
-  if (!strcmp(cmd, "KILL"))   {
-    MotorRunning = false; TargetRpm = 0.0f; SetCurrentRpm(0.0f); DisconnectPwm(); Serial.println(F("OK")); return;
-  }
-  if (!strcmp(cmd, "STATUS")) { PrintStatus(); return; }
-
-  if (!strcmp(cmd, "SETRPM")) {
-    char* q = args; TrimLeading(q);
-    long v = strtol(q, nullptr, 10);
-    SetTargetRpm((float)v);
-    Serial.println(F("OK")); return;
-  }
-
-  if (!strcmp(cmd, "SETFREQ")) {
-    char* q = args; TrimLeading(q);
-    double hz = strtod(q, nullptr);
-    if (hz < 0.0) { Serial.println(F("ERR")); return; }
-    double rpm = (hz * 60.0) / (double)StepsPerRevolution;
-    SetTargetRpm((float)rpm);
-    Serial.println(F("OK")); return;
-  }
-
-  if (!strcmp(cmd, "SETDIR")) {
-    char* q = args; TrimLeading(q);
-    char tok[8] = {0};
-    sscanf(q, " %7s", tok);
-    for (char* s = tok; *s; ++s) *s = toupper(*s);
-    if (!strcmp(tok, "CW") || !strcmp(tok, "1")) { SetDirection(true);  Serial.println(F("OK")); return; }
-    if (!strcmp(tok, "CCW")|| !strcmp(tok, "0")) { SetDirection(false); Serial.println(F("OK")); return; }
-    Serial.println(F("ERR")); return;
-  }
-
-  if (!strcmp(cmd, "SETSTEPS")) {
-    char* q = args; TrimLeading(q);
-    unsigned long n = strtoul(q, nullptr, 10);
-    if (n == 0 || n > 100000UL) { Serial.println(F("ERR")); return; }
-    StepsPerRevolution = n; UpdateFromCurrentRpm(); Serial.println(F("OK")); return;
-  }
-
-  if (!strcmp(cmd, "SETMAXRPM")) {
-    char* q = args; TrimLeading(q);
-    unsigned long n = strtoul(q, nullptr, 10);
-    if (n == 0 || n > 100000UL) { Serial.println(F("ERR")); return; }
-    MaxRpm = (uint16_t)n;
-    if (TargetRpm > MaxRpm) TargetRpm = MaxRpm;
-    if (CurrentRpm > MaxRpm) SetCurrentRpm((float)MaxRpm);
-    Serial.println(F("OK")); return;
-  }
-
-  if (!strcmp(cmd, "SETRAMP")) {
-    char* q = args; TrimLeading(q);
-    char* endptr = nullptr;
-    long step = strtol(q, &endptr, 10);
-    long ms   = strtol(endptr, nullptr, 10);
-    if (step <= 0 || step > 10000 || ms < 5 || ms > 10000) { Serial.println(F("ERR")); return; }
-    RpmStep = (uint16_t)step; RampIntervalMs = (uint16_t)ms; Serial.println(F("OK")); return;
-  }
-
-  if (!strcmp(cmd, "SENSOR?")) {
-    if (MotorRunning) Serial.println(F("WARN:RUNNING"));
-    float t, h;
-    if (ReadEnvOnce(t, h)) {
-      LastTempC = t; LastHumidity = h;
-      Serial.print(F("ENV ")); Serial.print(t, 2); Serial.print(F(" C, ")); Serial.print(h, 2); Serial.println(F(" %RH"));
-    } else {
-      Serial.println(F("ENV ERR"));
-    }
-    return;
-  }
-
-  Serial.println(F("ERR"));
-}
-
-// ================== Setup/Loop ==============================
-void SetupPins() {
-  pinMode(PulPin, OUTPUT); digitalWrite(PulPin, LOW); // OC1A pin
-  pinMode(DirPin, OUTPUT); digitalWrite(DirPin, LOW); // CCW default
-}
-
-void setup() {
   Serial.begin(115200);
-  SetupPins();
-  Dht.begin();
-  DisconnectPwm(); // idle quiet
-  Serial.println(F("READY (PUL=D11 hardware PWM, DIR=D33, DHT=D53)"));
-  PrintHelp();
+  // brief delay so the Pi opens serial after reset
+  delay(50);
+  Serial.println("READY");
 }
 
 void loop() {
-  // Serial line buffering
+  // Handle serial lines
+  static char buf[64];
+  static uint8_t idx = 0;
+
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\r') continue;
     if (c == '\n') {
-      if (CmdLen >= CmdBufferSize) CmdLen = 0;
-      CmdBuffer[CmdLen] = '\0';
-      HandleCommand(CmdBuffer);
-      CmdLen = 0;
+      buf[idx] = 0;
+      HandleLine(buf);
+      idx = 0;
     } else {
-      if (CmdLen < (CmdBufferSize - 1)) CmdBuffer[CmdLen++] = c;
-      else { CmdLen = 0; Serial.println(F("ERR")); }
+      if (idx < sizeof(buf) - 1) buf[idx++] = c;
     }
   }
 
-  // Ramp
-  ServiceRamp();
-
-  // Opportunistic env refresh while stopped
-  static unsigned long lastEnv = 0;
-  if (!MotorRunning) {
-    unsigned long now = millis();
-    if (now - lastEnv > 2000UL) {
-      float t, h; if (ReadEnvOnce(t, h)) { LastTempC = t; LastHumidity = h; }
-      lastEnv = now;
-    }
-  }
+  // Periodically refresh env cache
+  UpdateEnvCache();
 }
