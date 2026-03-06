@@ -360,42 +360,77 @@ def SetRamp():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------------------------------------------------------
-# DAQ endpoints (simple wrappers; safe if methods exist)
+# DAQ endpoints -- wired to LCRRecorder (BK894 over usbtmc)
 # -----------------------------------------------------------------------------
+@app.route("/daq/connect")
+def DaqConnect():
+    """Manually connect to the BK894 (auto-detects /dev/usbtmc*)."""
+    device = request.args.get("device", None)
+    try:
+        idn = lcr.connect(device=device)
+        return jsonify({"ok": True, "idn": idn, "device": lcr.device})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/daq/status")
+def DaqStatus():
+    """Check if the LCR meter is connected."""
+    return jsonify({
+        "connected": lcr.connected,
+        "device": lcr.device,
+        "mode": lcr.mode,
+        "recording": lcr.thread is not None and lcr.thread.is_alive(),
+    })
+
 @app.route("/daq/start")
 def DaqStart():
     filename = request.args.get("file", "measurements.csv")
+    mode     = request.args.get("mode", "RX")
     try:
         interval = float(request.args.get("interval", "0.5"))
+        freq     = float(request.args.get("freq", "1000"))
+        voltage  = float(request.args.get("voltage", "1.0"))
     except ValueError:
-        return jsonify({"error":"interval must be numeric seconds"}), 400
-    if hasattr(lcr, "start"):
-        try:
-            lcr.start(filename=filename, interval=interval)
-            return jsonify({"ok": True, "file": filename, "interval": interval})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    return jsonify({"error":"DAQ start not implemented"}), 501
+        return jsonify({"error": "interval, freq, and voltage must be numeric"}), 400
+    try:
+        lcr.start(filename=filename, interval=interval,
+                  mode=mode, freq=freq, voltage=voltage)
+        return jsonify({"ok": True, "file": filename, "interval": interval,
+                        "mode": mode, "freq": freq, "voltage": voltage})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/daq/stop")
 def DaqStop():
-    if hasattr(lcr, "stop"):
-        try:
-            lcr.stop()
-            return jsonify({"ok": True})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    return jsonify({"error":"DAQ stop not implemented"}), 501
+    try:
+        lcr.stop()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/daq/measure")
+def DaqMeasure():
+    """Take a single measurement (does not require recording to be active)."""
+    try:
+        if not lcr.connected:
+            lcr.connect()
+        primary, secondary, status = lcr.measure_once()
+        return jsonify({"primary": primary, "secondary": secondary,
+                        "status": status, "mode": lcr.mode})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/daq/data")
 def DaqData():
-    if hasattr(lcr, "get_last_data"):
-        ts_val = lcr.get_last_data()
-        if ts_val:
-            ts, val = ts_val
-            return jsonify({"timestamp": ts, "value": val})
-        return jsonify({"timestamp": None, "value": None})
-    return jsonify({"error":"DAQ data not implemented"}), 501
+    """Return the most recent measurement from the recording thread."""
+    data = lcr.get_last_data()
+    if data:
+        ts, primary, secondary, status = data
+        return jsonify({"timestamp": ts, "primary": primary,
+                        "secondary": secondary, "status": status,
+                        "mode": lcr.mode})
+    return jsonify({"timestamp": None, "primary": None,
+                    "secondary": None, "status": None})
 
 # -----------------------------------------------------------------------------
 # Main
