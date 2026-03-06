@@ -23,9 +23,12 @@
     }
     button { background:#1f2a3b; color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px 12px; cursor:pointer; margin-top:12px; }
     button:hover { border-color: var(--accent); }
-    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
     .pill { display:inline-block; padding:4px 10px; border-radius:999px; border:1px solid var(--border); background:#0c0f14; font-size:0.9rem; color:var(--muted); }
-    pre { background:#0c0f14; border:1px solid var(--border); padding:8px; border-radius:10px; overflow:auto; }
+    .pill.ok { border-color: var(--ok); color: var(--ok); }
+    .pill.err { border-color: #ff5c5c; color: #ff5c5c; }
+    pre { background:#0c0f14; border:1px solid var(--border); padding:8px; border-radius:10px; overflow:auto; min-height:60px; }
+    .big { font-size:1.4rem; font-weight:600; margin:6px 0; }
   </style>
 </head>
 <body>
@@ -37,50 +40,57 @@
   </nav>
 
   <div class="grid">
+    <!-- Setup Card -->
     <div class="card">
       <h3>Recording Setup</h3>
-      <!-- Keep advanced fields for future use; backend will ignore unknown params -->
+
       <label for="Mode">Measurement Mode</label>
       <select id="Mode">
-        <option value="R-X">R-X</option>
-        <option value="Z-deg">Z-deg</option>
-        <option value="C">Capacitance</option>
-        <option value="L">Inductance</option>
-        <option value="Q">Quality Factor</option>
-        <option value="D">Dissipation Factor</option>
-        <option value="DCR">DCR</option>
+        <option value="RX">RX (Resistance + Reactance)</option>
+        <option value="ZTD">ZTD (Impedance + Phase deg)</option>
+        <option value="CPD">CPD (Capacitance + Dissipation)</option>
+        <option value="CPQ">CPQ (Capacitance + Q Factor)</option>
+        <option value="CPRP">CPRP (Capacitance + Rp)</option>
+        <option value="LSRS">LSRS (Inductance + Rs)</option>
+        <option value="LPRP">LPRP (Inductance + Rp)</option>
+        <option value="ZTR">ZTR (Impedance + Phase rad)</option>
       </select>
 
-      <label for="Freq">Sampling Frequency (Hz)</label>
-      <input id="Freq" type="number" step="1" value="1000" />
+      <label for="Freq">Test Frequency (Hz)</label>
+      <input id="Freq" type="number" step="1" min="100" max="200000" value="1000" />
 
       <label for="Voltage">AC Test Voltage (V)</label>
-      <input id="Voltage" type="number" step="0.001" value="1.0" />
-
-      <label for="Speed">Measurement Speed</label>
-      <select id="Speed">
-        <option value="low">Low</option>
-        <option value="med" selected>Medium</option>
-        <option value="fast">Fast</option>
-      </select>
+      <input id="Voltage" type="number" step="0.01" min="0.01" max="2.0" value="1.0" />
 
       <label for="Interval">Recording Interval (s)</label>
-      <input id="Interval" type="number" step="0.01" value="0.5" />
+      <input id="Interval" type="number" step="0.01" min="0.05" value="0.5" />
 
       <label for="FileName">CSV file</label>
       <input id="FileName" type="text" value="measurements.csv" />
 
       <div class="row">
-        <button onclick="StartDaq()">Start</button>
-        <button onclick="StopDaq()">Stop</button>
+        <button onclick="ConnectLcr()">Connect</button>
+        <button onclick="StartDaq()">Start Recording</button>
+        <button onclick="StopDaq()">Stop Recording</button>
+        <button onclick="SingleMeasure()">Single Shot</button>
       </div>
       <div class="row">
         <span class="pill">Status: <span id="StatusText">Idle</span></span>
+        <span id="DevicePill" class="pill">device: --</span>
       </div>
     </div>
 
+    <!-- Live Data Card -->
     <div class="card">
       <h3>Live Data</h3>
+      <div id="ModeBadge" class="pill" style="margin-bottom:8px">Mode: --</div>
+      <div class="big" id="PrimaryVal">Primary: --</div>
+      <div class="big" id="SecondaryVal">Secondary: --</div>
+      <div style="margin-top:8px">
+        <span id="StatusBadge" class="pill">Status: --</span>
+        <span id="TimeBadge" class="pill">t = -- s</span>
+      </div>
+      <h3 style="margin-top:16px">Raw Response</h3>
       <pre id="LiveBox">--</pre>
     </div>
   </div>
@@ -91,68 +101,144 @@
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return r.json();
   }
-  async function RequestOk(url, opts) {
-    const r = await fetch(url, {cache:"no-store", ...(opts||{})});
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json().catch(_=> ({}));
+
+  function SetConnNote(s, ok){
+    const el = document.getElementById("ConnNote");
+    el.textContent = `DAQ: ${s}`;
+    el.className = ok ? "pill ok" : "pill";
   }
 
-  function SetConnNote(s){ document.getElementById("ConnNote").textContent = `DAQ: ${s}`; }
+  async function ConnectLcr(){
+    try {
+      const js = await RequestJson("/daq/connect");
+      if (js.ok) {
+        document.getElementById("StatusText").textContent = "Connected";
+        document.getElementById("DevicePill").textContent = `device: ${js.device}`;
+        SetConnNote("connected", true);
+      } else {
+        document.getElementById("StatusText").textContent = js.error || "Error";
+        SetConnNote("error", false);
+      }
+    } catch(e) {
+      document.getElementById("StatusText").textContent = "Connection failed";
+      SetConnNote("error", false);
+      alert(`Connect failed: ${e.message}`);
+    }
+  }
 
-  // NOTE: Your current Flask DAQ endpoints accept GETs (/daq/start?file=...&interval=...).
-  // We pass other fields too (backend may ignore them unless you extend it).
   async function StartDaq(){
-    const interval = document.getElementById("Interval").value || "0.5";
-    const file = encodeURIComponent(document.getElementById("FileName").value || "measurements.csv");
     const qs = new URLSearchParams({
-      file: file, interval: interval,
-      mode: document.getElementById("Mode").value,
-      freq: document.getElementById("Freq").value,
-      voltage: document.getElementById("Voltage").value,
-      speed: document.getElementById("Speed").value
+      file:     document.getElementById("FileName").value || "measurements.csv",
+      interval: document.getElementById("Interval").value || "0.5",
+      mode:     document.getElementById("Mode").value,
+      freq:     document.getElementById("Freq").value,
+      voltage:  document.getElementById("Voltage").value,
     }).toString();
 
     try {
-      await RequestOk(`/daq/start?${qs}`);
-      document.getElementById("StatusText").textContent = "Recording…";
-      SetConnNote("recording");
+      const js = await RequestJson(`/daq/start?${qs}`);
+      if (js.ok) {
+        document.getElementById("StatusText").textContent = "Recording...";
+        SetConnNote("recording", true);
+      } else {
+        document.getElementById("StatusText").textContent = js.error || "Error";
+        SetConnNote("error", false);
+        alert(`Start failed: ${js.error}`);
+      }
     } catch(e) {
       document.getElementById("StatusText").textContent = "Error";
-      SetConnNote("error");
+      SetConnNote("error", false);
       alert(`Start failed: ${e.message}`);
     }
   }
 
   async function StopDaq(){
     try {
-      await RequestOk(`/daq/stop`);
+      await RequestJson("/daq/stop");
       document.getElementById("StatusText").textContent = "Stopped";
-      SetConnNote("stopped");
+      SetConnNote("stopped", false);
     } catch(e) {
-      document.getElementById("StatusText").textContent = "Error";
-      SetConnNote("error");
       alert(`Stop failed: ${e.message}`);
     }
   }
 
-  async function FetchLiveData(){
+  async function SingleMeasure(){
     try {
-      const js = await RequestJson(`/daq/data`);
-      const box = document.getElementById("LiveBox");
-      if (js && js.timestamp != null) {
-        box.textContent = `Time: ${Number(js.timestamp).toFixed(3)} s\nValue: ${js.value}`;
-        SetConnNote("online");
-      } else {
-        box.textContent = "--";
+      const js = await RequestJson("/daq/measure");
+      if (js.error) {
+        alert(`Measure failed: ${js.error}`);
+        return;
       }
+      UpdateDisplay(js);
     } catch(e) {
-      document.getElementById("LiveBox").textContent = "--";
-      SetConnNote("offline");
+      alert(`Measure failed: ${e.message}`);
     }
   }
 
+  function FormatValue(val, mode, which){
+    if (val == null) return "--";
+    const v = Number(val);
+    // Capacitance modes: show nF or pF
+    if (which === "primary" && mode && mode.startsWith("C")) {
+      if (Math.abs(v) < 1e-9) return `${(v*1e12).toFixed(3)} pF`;
+      return `${(v*1e9).toFixed(3)} nF`;
+    }
+    // Inductance modes: show uH or mH
+    if (which === "primary" && mode && mode.startsWith("L")) {
+      if (Math.abs(v) < 1e-3) return `${(v*1e6).toFixed(3)} uH`;
+      return `${(v*1e3).toFixed(3)} mH`;
+    }
+    // Impedance/resistance: show Ohm
+    if (which === "primary" && (mode === "RX" || mode === "ZTD" || mode === "ZTR")) {
+      return `${v.toExponential(4)} Ohm`;
+    }
+    return v.toExponential(4);
+  }
+
+  function UpdateDisplay(js){
+    const mode = js.mode || "--";
+    document.getElementById("ModeBadge").textContent = `Mode: ${mode}`;
+    document.getElementById("PrimaryVal").textContent =
+      `Primary: ${FormatValue(js.primary, mode, "primary")}`;
+    document.getElementById("SecondaryVal").textContent =
+      `Secondary: ${FormatValue(js.secondary, mode, "secondary")}`;
+
+    const sBadge = document.getElementById("StatusBadge");
+    if (js.status != null) {
+      sBadge.textContent = js.status === 0 ? "Status: OK" : `Status: ${js.status}`;
+      sBadge.className = js.status === 0 ? "pill ok" : "pill err";
+    }
+    if (js.timestamp != null) {
+      document.getElementById("TimeBadge").textContent = `t = ${Number(js.timestamp).toFixed(3)} s`;
+    }
+    document.getElementById("LiveBox").textContent = JSON.stringify(js, null, 2);
+  }
+
+  // Poll live data every second while recording
+  async function FetchLiveData(){
+    try {
+      const js = await RequestJson("/daq/data");
+      if (js && js.timestamp != null) {
+        UpdateDisplay(js);
+        SetConnNote("recording", true);
+      }
+    } catch(e) {
+      // silent -- instrument may not be connected
+    }
+  }
   setInterval(FetchLiveData, 1000);
-  FetchLiveData();
+
+  // Check connection status on load
+  (async function(){
+    try {
+      const js = await RequestJson("/daq/status");
+      if (js.connected) {
+        document.getElementById("DevicePill").textContent = `device: ${js.device}`;
+        SetConnNote(js.recording ? "recording" : "connected", js.connected);
+        document.getElementById("StatusText").textContent = js.recording ? "Recording..." : "Connected";
+      }
+    } catch(e) {}
+  })();
 </script>
 </body>
 </html>
