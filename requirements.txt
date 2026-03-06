@@ -1,0 +1,15 @@
+# No external dependencies required!
+# 
+# This project uses only Python standard library modules:
+# - tkinter (built into Python)
+# - os, time, struct, errno, csv, threading, datetime (all standard library)
+#
+# The instruments.py module uses direct USB-TMC communication via
+# os.open() and os.read()/os.write() system calls, avoiding the need
+# for PyVISA, pyvisa-py, or other instrument control libraries.
+#
+# To set up the environment:
+# python3 -m venv venv
+# source venv/bin/activate
+#
+# No pip install needed!
