@@ -57,6 +57,31 @@
     .uplot{background:#0a0d15;border-radius:10px;border:1px solid var(--frame)}
     .foot{color:var(--muted);font-size:12px;text-align:right;margin-top:-4px}
     .flex{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+    /* Camera channel buttons */
+    .cam-channels{display:flex;gap:6px;margin-right:auto}
+    .cam-ch-btn{min-width:40px;text-align:center;transition:background .15s,border-color .15s}
+    .cam-ch-btn.active{background:#1a2840;border-color:var(--accent);color:var(--accent)}
+
+    /* Confirmation dialog overlay */
+    .dialog-overlay{
+      position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100;display:flex;align-items:center;justify-content:center;
+    }
+    .dialog-overlay[hidden]{display:none}
+    .dialog-box{
+      background:var(--panel);border:1px solid var(--frame);border-radius:14px;padding:24px 28px;
+      max-width:420px;width:90%;box-shadow:0 12px 40px rgba(0,0,0,.5);text-align:center;
+    }
+    .dialog-box h4{margin:0 0 8px 0;font-size:18px;color:var(--warn)}
+    .dialog-box p{margin:0 0 18px 0;color:var(--muted);font-size:14px;line-height:1.5}
+    .dialog-actions{display:flex;gap:10px;justify-content:center}
+    .dialog-actions button{padding:8px 20px;border-radius:10px;border:1px solid var(--frame);cursor:pointer;font-size:14px}
+    .dialog-actions .confirm{background:#3b2a10;color:var(--warn);border-color:#5a3e18}
+    .dialog-actions .cancel{background:#0e1320;color:var(--muted)}
+
+    /* Sub-label for grouped inputs */
+    .sub-label{font-size:11px;color:var(--muted);margin-bottom:2px}
+    .motor-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:6px}
   </style>
   <!-- uPlot -->
   <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.17/dist/uPlot.min.css">
@@ -100,6 +125,30 @@
           <button id="StartBtn">Start</button>
           <button id="StopBtn">Stop</button>
         </div>
+
+        <h3 style="margin-top:14px">Ramp &amp; Limits</h3>
+        <div class="motor-row">
+          <div>
+            <div class="sub-label">Accel (RPM/s)</div>
+            <input id="RampUpBox" type="number" step="1" min="0" placeholder="0 = instant" style="width:120px">
+          </div>
+          <div>
+            <div class="sub-label">Decel (RPM/s)</div>
+            <input id="RampDownBox" type="number" step="1" min="0" placeholder="0 = instant" style="width:120px">
+          </div>
+          <button id="SetRamp">Set Ramp</button>
+        </div>
+        <div class="motor-row">
+          <div>
+            <div class="sub-label">Max RPM</div>
+            <input id="MaxRpmBox" type="number" step="1" min="1" placeholder="1200" style="width:120px">
+          </div>
+          <button id="SetMaxRpm">Set Max</button>
+        </div>
+        <div class="motor-row">
+          <span id="RampBadge" class="badge">ramp: off</span>
+          <span id="MaxRpmBadge" class="badge">max RPM: 1200</span>
+        </div>
       </section>
 
       <!-- Environment (MIDDLE) -->
@@ -128,11 +177,17 @@
 
       <!-- Camera (BOTTOM) -->
       <section class="panel video-panel">
-        <h3>Camera (cam0)</h3>
+        <h3>Camera (<span id="CamLabel">cam0</span>)</h3>
         <div class="video-frame">
           <img id="CamView" src="/video.mjpg?ch=0" alt="Live video">
         </div>
         <div class="controls">
+          <div class="cam-channels">
+            <button class="controls cam-ch-btn active" data-ch="0">Cam 0</button>
+            <button class="controls cam-ch-btn" data-ch="1">Cam 1</button>
+            <button class="controls cam-ch-btn" data-ch="2">Cam 2</button>
+            <button class="controls cam-ch-btn" data-ch="3">Cam 3</button>
+          </div>
           <button id="ReloadCam">Reload Stream</button>
           <button id="SnapshotBtn">Snapshot</button>
           <span class="badge" id="CamSrcBadge">source: /video.mjpg?ch=0</span>
@@ -141,6 +196,18 @@
 
     </div>
   </main>
+
+  <!-- Max-RPM confirmation dialog -->
+  <div id="RpmDialog" class="dialog-overlay" hidden>
+    <div class="dialog-box">
+      <h4>RPM Limit Exceeded</h4>
+      <p id="RpmDialogMsg">Requested RPM exceeds the configured maximum.</p>
+      <div class="dialog-actions">
+        <button class="cancel" id="RpmDialogCancel">Cancel</button>
+        <button class="confirm" id="RpmDialogConfirm">Proceed Anyway</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     // ---------- helpers ----------
@@ -163,17 +230,75 @@
       try{
         const s = await GET("/status");
         setBadgeRunning(!!s.running);
+        // Update ramp & max RPM badges from firmware status
+        if (s.ramp_up !== undefined) {
+          const up = parseFloat(s.ramp_up), dn = parseFloat(s.ramp_down);
+          const rampBadge = document.getElementById("RampBadge");
+          if (up > 0 || dn > 0) {
+            let txt = "ramp:";
+            if (up > 0) txt += ` +${up}`;
+            if (dn > 0) txt += ` -${dn}`;
+            txt += " RPM/s";
+            if (s.ramping) txt += " (active)";
+            rampBadge.textContent = txt;
+            rampBadge.style.borderColor = s.ramping ? "#5a9e3e" : "#22304a";
+          } else {
+            rampBadge.textContent = "ramp: off";
+            rampBadge.style.borderColor = "#22304a";
+          }
+        }
+        if (s.max_rpm !== undefined) {
+          document.getElementById("MaxRpmBadge").textContent = `max RPM: ${s.max_rpm}`;
+        }
       }catch(e){}
     }
     setInterval(refreshStatus,1000);
 
+    // ---- Max-RPM confirmation dialog plumbing ----
+    const rpmDialog      = document.getElementById("RpmDialog");
+    const rpmDialogMsg   = document.getElementById("RpmDialogMsg");
+    let   _rpmDialogResolve = null;
+
+    function showRpmDialog(requested, max){
+      rpmDialogMsg.textContent =
+        `Requested ${requested} RPM exceeds the configured limit of ${max} RPM. ` +
+        `Are you sure you want to proceed?`;
+      rpmDialog.hidden = false;
+      return new Promise(resolve => { _rpmDialogResolve = resolve; });
+    }
+    document.getElementById("RpmDialogCancel").onclick = ()=>{
+      rpmDialog.hidden = true; if (_rpmDialogResolve) _rpmDialogResolve(false);
+    };
+    document.getElementById("RpmDialogConfirm").onclick = ()=>{
+      rpmDialog.hidden = true; if (_rpmDialogResolve) _rpmDialogResolve(true);
+    };
+
+    // Generic setter that handles 409 (exceeds_max_rpm) with a dialog
+    async function motorSet(url){
+      const r = await fetch(url);
+      if (r.status === 409) {
+        const body = await r.json();
+        if (body.error === "exceeds_max_rpm") {
+          const ok = await showRpmDialog(body.requested_rpm, body.max_rpm);
+          if (ok) {
+            // Resend with override
+            const sep = url.includes("?") ? "&" : "?";
+            const r2 = await fetch(url + sep + "override=1");
+            return r2.json();
+          }
+          return null; // cancelled
+        }
+      }
+      return r.json();
+    }
+
     document.getElementById("SetRpm").onclick = async ()=>{
       const rpm = parseFloat(document.getElementById("RpmBox").value || "0");
-      if(rpm>0) await GET(`/setRpm?rpm=${rpm}&start=1`); refreshStatus();
+      if(rpm>0) await motorSet(`/setRpm?rpm=${rpm}&start=1`); refreshStatus();
     };
     document.getElementById("SetFreq").onclick = async ()=>{
       const hz = parseFloat(document.getElementById("FreqBox").value || "0");
-      if(hz>0) await GET(`/setFreq?hz=${hz}&start=1`); refreshStatus();
+      if(hz>0) await motorSet(`/setFreq?hz=${hz}&start=1`); refreshStatus();
     };
     document.getElementById("DoSteps").onclick = async ()=>{
       const n = parseInt(document.getElementById("StepsBox").value || "0",10);
@@ -186,17 +311,47 @@
     document.getElementById("StartBtn").onclick = async ()=>{ await GET("/start"); refreshStatus(); };
     document.getElementById("StopBtn").onclick  = async ()=>{ await GET("/stop");  refreshStatus(); };
 
-    // ---------- camera (single cam0) ----------
+    // ---- Ramp controls ----
+    document.getElementById("SetRamp").onclick = async ()=>{
+      const up   = parseFloat(document.getElementById("RampUpBox").value   || "0");
+      const down = parseFloat(document.getElementById("RampDownBox").value || "0");
+      await GET(`/setRamp?up=${up}&down=${down}`);
+      refreshStatus();
+    };
+
+    // ---- Max RPM control ----
+    document.getElementById("SetMaxRpm").onclick = async ()=>{
+      const v = parseInt(document.getElementById("MaxRpmBox").value || "0", 10);
+      if(v > 0) await GET(`/setMaxRpm?value=${v}`);
+      refreshStatus();
+    };
+
+    // ---------- camera (multi-channel) ----------
+    let currentCh = 0;
     const camImg = document.getElementById("CamView");
     const camSrcBadge = document.getElementById("CamSrcBadge");
+    const camLabel = document.getElementById("CamLabel");
+    const camChBtns = document.querySelectorAll(".cam-ch-btn");
+
+    function switchCam(ch){
+      currentCh = ch;
+      const u = `/video.mjpg?ch=${ch}&ts=${Date.now()}`;
+      camImg.src = u;
+      camSrcBadge.textContent = `source: /video.mjpg?ch=${ch}`;
+      camLabel.textContent = `cam${ch}`;
+      camChBtns.forEach(b => b.classList.toggle("active", parseInt(b.dataset.ch) === ch));
+    }
+    camChBtns.forEach(btn => {
+      btn.addEventListener("click", ()=> switchCam(parseInt(btn.dataset.ch)));
+    });
+
     function reloadCam(){
-      const u = "/video.mjpg?ch=0&ts="+Date.now();
-      camImg.src = u; camSrcBadge.textContent = "source: /video.mjpg?ch=0";
+      switchCam(currentCh);
     }
     document.getElementById("ReloadCam").onclick = reloadCam;
     document.getElementById("SnapshotBtn").onclick = ()=>{
-      const u = "/snapshot.jpg?ch=0&ts="+Date.now();
-      const a = document.createElement("a"); a.href = u; a.download = "snapshot.jpg"; a.click();
+      const u = `/snapshot.jpg?ch=${currentCh}&ts=${Date.now()}`;
+      const a = document.createElement("a"); a.href = u; a.download = `snapshot_cam${currentCh}.jpg`; a.click();
     };
     camImg.addEventListener("error", () => setTimeout(reloadCam, 800));
 

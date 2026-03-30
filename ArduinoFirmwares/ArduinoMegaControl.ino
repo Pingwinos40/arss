@@ -31,9 +31,14 @@ long     gPulsesPerRev = 200; // set with SETPPR; default full-step 200
 long     gMaxRPM = 1200;      // stored; not enforced here
 int      gDir = 0;            // 0 = CCW, 1 = CW (arbitrary convention)
 
-// Simple ramp storage (not enforced in this minimal build)
-int gRampRpmStep = 0;
-int gRampMs = 0;
+// Ramp engine --
+// Rates are in RPM/s.  0 = instant (no ramp).
+double gRampUpRate   = 0.0;   // RPM per second for acceleration
+double gRampDownRate = 0.0;   // RPM per second for deceleration
+double gTargetHz     = 0.0;   // where we're ramping toward
+bool   gRamping      = false; // true while actively ramping
+unsigned long gLastRampUs = 0;
+static const unsigned long RAMP_TICK_US = 5000; // 5 ms ramp update interval
 
 // ENV cache to avoid slow reads on every STATUS
 unsigned long gLastEnvMs = 0;
@@ -106,16 +111,18 @@ void StartPulseOutput() {
   gRunning = true;
 }
 
-// Stop toggling OC1A.
+// Stop toggling OC1A. Also cancels any active ramp.
 void StopPulseOutput() {
   TCCR1A &= ~_BV(COM1A0);
   gRunning = false;
   gUseTarget = false;
+  gRamping = false;
+  gTargetHz = gCurrentHz;
 }
 
-// Safe setter for frequency (does not force start)
+// Safe setter for frequency (does not force start).
+// Called directly for instant changes OR from the ramp tick.
 void SetPulseHz(double hz) {
-  // Limit to a sane band for typical stepper drivers
   if (hz < 0.5) hz = 0.5;
   if (hz > 50000.0) hz = 50000.0;
 
@@ -126,6 +133,61 @@ void SetPulseHz(double hz) {
   gCurrentHz = hz;
   gCurrentOCR1A = ocr;
   gCurrentCSBits = cs;
+}
+
+// Request a frequency change — ramps if rates are configured, else instant.
+void RequestHz(double hz) {
+  if (hz < 0.5) hz = 0.5;
+  if (hz > 50000.0) hz = 50000.0;
+  gTargetHz = hz;
+
+  // Check whether any ramp rate applies in the needed direction
+  bool goingUp   = (hz > gCurrentHz) && (gRampUpRate > 0);
+  bool goingDown = (hz < gCurrentHz) && (gRampDownRate > 0);
+
+  if (goingUp || goingDown) {
+    gRamping = true;
+    gLastRampUs = micros();
+  } else {
+    // Instant
+    SetPulseHz(hz);
+    gRamping = false;
+  }
+}
+
+// Called from loop() every ~RAMP_TICK_US to step frequency toward target.
+void RampTick() {
+  if (!gRamping) return;
+
+  unsigned long now = micros();
+  unsigned long dt = now - gLastRampUs;
+  if (dt < RAMP_TICK_US) return;
+  gLastRampUs = now;
+
+  double dtS = (double)dt / 1e6;
+  double ppr = (double)gPulsesPerRev;
+
+  if (gCurrentHz < gTargetHz) {
+    // Accelerating
+    double dHz = (gRampUpRate * ppr / 60.0) * dtS;
+    double newHz = gCurrentHz + dHz;
+    if (newHz >= gTargetHz) { newHz = gTargetHz; gRamping = false; }
+    SetPulseHz(newHz);
+  } else if (gCurrentHz > gTargetHz) {
+    // Decelerating
+    double dHz = (gRampDownRate * ppr / 60.0) * dtS;
+    double newHz = gCurrentHz - dHz;
+    if (newHz <= gTargetHz) { newHz = gTargetHz; gRamping = false; }
+    SetPulseHz(newHz);
+  } else {
+    gRamping = false;
+  }
+
+  // SetPulseHz -> ApplyT1 disconnects OC1A and clears gRunning as a side
+  // effect.  The motor should keep running throughout the ramp AND after it
+  // finishes, so always re-enable the output here.
+  TCCR1A |= _BV(COM1A0);
+  gRunning = true;
 }
 
 // Count toggles for SETSTEPS and stop at target.
@@ -170,7 +232,8 @@ void PrintStatus() {
   }
 
   // Compute RPM from Hz if PPR > 0
-  double rpm = (gPulsesPerRev > 0) ? (gCurrentHz * 60.0 / (double)gPulsesPerRev) : 0.0;
+  double ppr = (double)gPulsesPerRev;
+  double rpm = (ppr > 0) ? (gCurrentHz * 60.0 / ppr) : 0.0;
 
   Serial.print("{\"running\":");
   Serial.print(gRunning ? "true" : "false");
@@ -179,6 +242,12 @@ void PrintStatus() {
   Serial.print(",\"dir\":");    Serial.print(gDir);
   Serial.print(",\"ppr\":");    Serial.print(gPulsesPerRev);
   Serial.print(",\"steps_remaining\":"); Serial.print(stepsRemain);
+  Serial.print(",\"max_rpm\":"); Serial.print(gMaxRPM);
+  Serial.print(",\"ramping\":"); Serial.print(gRamping ? "true" : "false");
+  Serial.print(",\"ramp_up\":"); Serial.print(gRampUpRate, 1);
+  Serial.print(",\"ramp_down\":"); Serial.print(gRampDownRate, 1);
+  double targetRpm = (ppr > 0) ? (gTargetHz * 60.0 / ppr) : 0.0;
+  Serial.print(",\"target_rpm\":"); Serial.print(targetRpm, 2);
   Serial.print(",\"env\":{");
   Serial.print("\"temp_c\":");  if (isnan(gLastTempC)) Serial.print("null"); else Serial.print(gLastTempC, 1);
   Serial.print(",\"humidity\":"); if (isnan(gLastRH)) Serial.print("null"); else Serial.print(gLastRH, 1);
@@ -211,17 +280,17 @@ void HandleLine(char *line) {
   }
   if (!strncmp(line, "SETFREQ", 7)) {
     double hz = atof(line + 7);
-    SetPulseHz(hz);
-    Serial.print("OK SETFREQ "); Serial.println(gCurrentHz, 3);
+    RequestHz(hz);
+    Serial.print("OK SETFREQ "); Serial.println(gTargetHz, 3);
     return;
   }
   if (!strncmp(line, "SETRPM", 6)) {
     double rpm = atof(line + 6);
     rpm = max(0.0, rpm);
     double hz = rpm * (double)gPulsesPerRev / 60.0;
-    SetPulseHz(hz);
+    RequestHz(hz);
     Serial.print("OK SETRPM "); Serial.print(rpm, 2);
-    Serial.print(" Hz=");        Serial.println(gCurrentHz, 3);
+    Serial.print(" Hz=");        Serial.println(gTargetHz, 3);
     return;
   }
   if (!strncmp(line, "SETPPR", 6)) {
@@ -265,12 +334,12 @@ void HandleLine(char *line) {
     return;
   }
   if (!strncmp(line, "SETRAMP", 7)) {
-    int rs = 0, ms = 0;
-    sscanf(line + 7, "%d %d", &rs, &ms);
-    gRampRpmStep = max(0, rs);
-    gRampMs = max(0, ms);
-    Serial.print("OK SETRAMP "); Serial.print(gRampRpmStep);
-    Serial.print(" "); Serial.println(gRampMs);
+    double up = 0, down = 0;
+    sscanf(line + 7, "%lf %lf", &up, &down);
+    gRampUpRate   = max(0.0, up);
+    gRampDownRate = max(0.0, down);
+    Serial.print("OK SETRAMP UP="); Serial.print(gRampUpRate, 1);
+    Serial.print(" DOWN="); Serial.println(gRampDownRate, 1);
     return;
   }
   if (!strcmp(line, "SENSOR?")) {
@@ -300,6 +369,7 @@ void setup() {
   TCCR1B = 0;
   TIMSK1 = 0;
   SetPulseHz(1000.0); // default 1 kHz ready
+  gTargetHz = gCurrentHz;
 
   Serial.begin(115200);
   // brief delay so the Pi opens serial after reset
@@ -323,6 +393,9 @@ void loop() {
       if (idx < sizeof(buf) - 1) buf[idx++] = c;
     }
   }
+
+  // Step ramp engine toward target frequency
+  RampTick();
 
   // Periodically refresh env cache
   UpdateEnvCache();

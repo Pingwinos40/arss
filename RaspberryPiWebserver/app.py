@@ -233,6 +233,28 @@ def Snapshot():
 
 
 # -----------------------------------------------------------------------------
+# Max RPM tracking (server-side mirror of Arduino value for gating)
+# -----------------------------------------------------------------------------
+_max_rpm = 1200  # must match firmware default
+
+def _get_max_rpm():
+    """Return the current max RPM (kept in sync with Arduino)."""
+    return _max_rpm
+
+def _check_rpm_limit(rpm, override):
+    """Return (ok, response) — if not ok, response is a 409 JSON."""
+    global _max_rpm
+    if rpm > _max_rpm and not override:
+        return False, (jsonify({
+            "error": "exceeds_max_rpm",
+            "requested_rpm": rpm,
+            "max_rpm": _max_rpm,
+            "message": f"Requested {rpm} RPM exceeds limit of {_max_rpm} RPM. "
+                       f"Re-send with override=true to proceed.",
+        }), 409)
+    return True, None
+
+# -----------------------------------------------------------------------------
 # Arduino API routes
 # -----------------------------------------------------------------------------
 @app.route("/ping")
@@ -276,7 +298,20 @@ def SetFreq():
         hz = float(request.args.get("hz", ""))
     except ValueError:
         return jsonify({"error": "hz must be a number"}), 400
+    override = request.args.get("override", "0").lower() in ("1","true","yes")
     autoStart = request.args.get("start", "1").lower() in ("1","true","yes")
+    # Convert Hz to RPM for limit check (use Arduino's PPR via last status,
+    # fall back to 200 if unknown)
+    ppr = 200
+    try:
+        st = Mega.QueryJsonStatus()
+        ppr = int(st.get("ppr", 200))
+    except Exception:
+        pass
+    rpm = hz * 60.0 / ppr if ppr > 0 else 0
+    ok, err_resp = _check_rpm_limit(rpm, override)
+    if not ok:
+        return err_resp
     try:
         r1 = Mega.SendLine(f"SETFREQ {hz}")
         r2 = Mega.SendLine("START") if autoStart else []
@@ -290,7 +325,11 @@ def SetRpm():
         rpm = int(float(request.args.get("rpm", "")))
     except ValueError:
         return jsonify({"error": "rpm must be numeric"}), 400
+    override = request.args.get("override", "0").lower() in ("1","true","yes")
     autoStart = request.args.get("start", "0").lower() in ("1","true","yes")
+    ok, err_resp = _check_rpm_limit(rpm, override)
+    if not ok:
+        return err_resp
     try:
         r1 = Mega.SendLine(f"SETRPM {rpm}")
         r2 = Mega.SendLine("START") if autoStart else []
@@ -338,24 +377,27 @@ def SetSteps():
 
 @app.route("/setMaxRpm")
 def SetMaxRpm():
+    global _max_rpm
     try:
         n = int(request.args.get("value", ""))
     except ValueError:
         return jsonify({"error": "value must be integer"}), 400
     try:
-        return jsonify({"response": Mega.SendLine(f"SETMAXRPM {n}")})
+        resp = Mega.SendLine(f"SETMAXRPM {n}")
+        _max_rpm = n  # keep server-side mirror in sync
+        return jsonify({"response": resp, "max_rpm": _max_rpm})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/setRamp")
 def SetRamp():
     try:
-        step = int(request.args.get("rpm_step", ""))
-        ms   = int(request.args.get("ms", ""))
+        up   = float(request.args.get("up", "0"))
+        down = float(request.args.get("down", "0"))
     except ValueError:
-        return jsonify({"error": "rpm_step and ms must be integers"}), 400
+        return jsonify({"error": "up and down must be numeric (RPM/s)"}), 400
     try:
-        return jsonify({"response": Mega.SendLine(f"SETRAMP {step} {ms}")})
+        return jsonify({"response": Mega.SendLine(f"SETRAMP {up} {down}")})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
