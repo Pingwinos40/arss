@@ -1,0 +1,11 @@
+# udev rule: let the dashboard user claim the BK Precision 894 LCR meter
+# through libusb (pyvisa-py backend) without root.
+# Install: sudo cp deploy/99-bk894.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload
+#          then unplug and replug the meter so the rule applies.
+# Mirrors the rule documented in Digital_Multitool's README (mode 0666), but
+# matched on the exact VID:PID 0471:2827 instead of the whole vendor ID.
+# Mode 0666 lets any local user talk to the meter; for a stricter setup use
+# GROUP="plugdev", MODE="0660" and put the service user in plugdev.
+# NOTE: udev does not support trailing comments; keep '#' at line start.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0471", ATTR{idProduct}=="2827", MODE="0666"
