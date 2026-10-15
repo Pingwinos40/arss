@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify, Response, render_template
 import os, time, glob, json, threading, contextlib, subprocess
 import serial
 from serial.serialutil import SerialException
-from lcr_controller import LCRRecorder
+from lcr_controller import LCRRecorder, http_status_for
 from shutil import which
 
 # -----------------------------------------------------------------------------
@@ -402,32 +402,34 @@ def SetRamp():
         return jsonify({"error": str(e)}), 500
 
 # -----------------------------------------------------------------------------
-# DAQ endpoints -- wired to LCRRecorder (BK894 over usbtmc)
+# DAQ endpoints: wired to LCRRecorder (BK894 over pyvisa-py, see lcr_controller)
 # -----------------------------------------------------------------------------
+def DaqError(exc):
+    """JSON error with the status the recorder assigned (400/409/500)."""
+    return jsonify({"error": str(exc)}), http_status_for(exc)
+
 @app.route("/daq/connect")
 def DaqConnect():
-    """Manually connect to the BK894 (auto-detects /dev/usbtmc*)."""
-    device = request.args.get("device", None)
+    """Connect to the BK894, found by USB VID/PID (no device paths)."""
+    if "device" in request.args:
+        return jsonify({"error": "the device parameter is no longer accepted; "
+                                 "the meter is found by its USB VID/PID"}), 400
     try:
-        idn = lcr.connect(device=device)
-        return jsonify({"ok": True, "idn": idn, "device": lcr.device})
+        idn = lcr.connect()
+        st = lcr.status()
+        return jsonify({"ok": True, "idn": idn, "resource": st["resource"],
+                        "config": st["config"]})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return DaqError(e)
 
 @app.route("/daq/status")
 def DaqStatus():
-    """Check if the LCR meter is connected."""
-    return jsonify({
-        "connected": lcr.connected,
-        "device": lcr.device,
-        "mode": lcr.mode,
-        "recording": lcr.thread is not None and lcr.thread.is_alive(),
-    })
+    """Recorder state: idle / recording / error, counts, last error, run."""
+    return jsonify(lcr.status())
 
 @app.route("/daq/start")
 def DaqStart():
-    filename = request.args.get("file", "measurements.csv")
-    mode     = request.args.get("mode", "RX")
+    """Start a run. file = optional run name ([A-Za-z0-9._-], max 64)."""
     try:
         interval = float(request.args.get("interval", "0.5"))
         freq     = float(request.args.get("freq", "1000"))
@@ -435,44 +437,38 @@ def DaqStart():
     except ValueError:
         return jsonify({"error": "interval, freq, and voltage must be numeric"}), 400
     try:
-        lcr.start(filename=filename, interval=interval,
-                  mode=mode, freq=freq, voltage=voltage)
-        return jsonify({"ok": True, "file": filename, "interval": interval,
-                        "mode": mode, "freq": freq, "voltage": voltage})
+        run = lcr.start(run_name=request.args.get("file"),
+                        interval=interval,
+                        mode=request.args.get("mode", "RX"),
+                        freq=freq, voltage=voltage,
+                        note=request.args.get("note"))
+        return jsonify({"ok": True, **run})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return DaqError(e)
 
 @app.route("/daq/stop")
 def DaqStop():
     try:
-        lcr.stop()
-        return jsonify({"ok": True})
+        stopped = lcr.stop()
+        st = lcr.status()
+        if not stopped:
+            return jsonify({"error": st["last_error"], "status": st}), 500
+        return jsonify({"ok": True, "status": st})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return DaqError(e)
 
 @app.route("/daq/measure")
 def DaqMeasure():
     """Take a single measurement (does not require recording to be active)."""
     try:
-        if not lcr.connected:
-            lcr.connect()
-        primary, secondary, status = lcr.measure_once()
-        return jsonify({"primary": primary, "secondary": secondary,
-                        "status": status, "mode": lcr.mode})
+        return jsonify(lcr.measure_once())
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return DaqError(e)
 
 @app.route("/daq/data")
 def DaqData():
-    """Return the most recent measurement from the recording thread."""
-    data = lcr.get_last_data()
-    if data:
-        ts, primary, secondary, status = data
-        return jsonify({"timestamp": ts, "primary": primary,
-                        "secondary": secondary, "status": status,
-                        "mode": lcr.mode})
-    return jsonify({"timestamp": None, "primary": None,
-                    "secondary": None, "status": None})
+    """Most recent sample of the running (or last) recording, with age_s."""
+    return jsonify(lcr.get_last_data())
 
 # -----------------------------------------------------------------------------
 # Main

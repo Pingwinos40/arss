@@ -1,15 +1,24 @@
-# No external dependencies required!
-# 
-# This project uses only Python standard library modules:
-# - tkinter (built into Python)
-# - os, time, struct, errno, csv, threading, datetime (all standard library)
+# Python dependencies for the Raspberry Pi dashboard (RaspberryPiWebserver/).
+# Install into the venv with: pip install -r requirements.txt
 #
-# The instruments.py module uses direct USB-TMC communication via
-# os.open() and os.read()/os.write() system calls, avoiding the need
-# for PyVISA, pyvisa-py, or other instrument control libraries.
-#
-# To set up the environment:
-# python3 -m venv venv
-# source venv/bin/activate
-#
-# No pip install needed!
+# Lower bounds, not pins: the versions installed on the Pi have not been
+# recorded yet (issue #20). Replace with exact pins from `pip freeze` on the
+# Pi once a working set is confirmed there.
+
+# Web server. app.py uses only Flask, request, jsonify, Response and
+# render_template. 3.0 is the lower bound proposed in issue #20; a
+# development PC ran Flask 3.1.0.
+flask>=3.0
+
+# Arduino Mega serial link (import name: serial). 3.5 is the version on the
+# development PC and the one Digital_Multitool pins.
+pyserial>=3.5
+
+# BK894 LCR meter over USB-TMC: PyVISA with the pure-Python pyvisa-py
+# backend ('@py'), which reaches the meter through libusb via pyusb. The
+# minimums are the versions Digital_Multitool pins and drives the same meter
+# with (commit f22527f). PyVISA 1.16 needs Python 3.10 or newer.
+# pyusb also needs the libusb-1.0 system library (apt: libusb-1.0-0).
+pyvisa>=1.16.1
+pyvisa-py>=0.8.1
+pyusb>=1.3.1

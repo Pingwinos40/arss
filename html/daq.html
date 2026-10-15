@@ -7,12 +7,15 @@
   <style>
     :root {
       --bg: #0f1115; --card: #151923; --text: #e6e8ee; --muted:#9aa3b2;
-      --accent:#6ea8fe; --ok:#31c48d; --warn:#f0ad4e; --border:#242a36;
+      --border:#242a36;
+      /* Paul Tol "bright" scheme for status states */
+      --ok:#228833; --warn:#CCBB44; --err:#EE6677; --info:#4477AA; --neutral:#BBBBBB;
+      --accent: var(--info);
     }
     * { box-sizing: border-box; }
     body { margin:0; padding:24px; font-family: system-ui, Arial, sans-serif; background:var(--bg); color:var(--text); }
     a { color: var(--accent); text-decoration: none; }
-    nav { display:flex; gap:20px; align-items:center; border-bottom:1px solid var(--border); padding-bottom:12px; margin-bottom:20px; }
+    nav { display:flex; gap:20px; align-items:center; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:12px; margin-bottom:20px; }
     .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr)); gap:16px; }
     .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:16px; }
     .card h3 { margin:0 0 12px; font-size:1.05rem; color:var(--muted); }
@@ -23,12 +26,23 @@
     }
     button { background:#1f2a3b; color:var(--text); border:1px solid var(--border); border-radius:10px; padding:8px 12px; cursor:pointer; margin-top:12px; }
     button:hover { border-color: var(--accent); }
+    button:disabled { opacity:0.5; cursor:default; }
     .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
-    .pill { display:inline-block; padding:4px 10px; border-radius:999px; border:1px solid var(--border); background:#0c0f14; font-size:0.9rem; color:var(--muted); }
+    .pill { display:inline-block; padding:4px 10px; border-radius:999px; border:1px solid var(--neutral); background:#0c0f14; font-size:0.9rem; color:var(--neutral); }
     .pill.ok { border-color: var(--ok); color: var(--ok); }
-    .pill.err { border-color: #ff5c5c; color: #ff5c5c; }
+    .pill.warn { border-color: var(--warn); color: var(--warn); }
+    .pill.err { border-color: var(--err); color: var(--err); }
+    .pill.info { border-color: var(--info); color: var(--info); }
+    .msg { margin-top:10px; min-height:1.2em; color:var(--muted); word-break:break-word; }
+    .msg.err { color: var(--err); }
+    .msg.ok { color: var(--ok); }
+    table.kv { width:100%; border-collapse:collapse; font-size:0.92rem; }
+    table.kv td { padding:3px 4px; vertical-align:top; border-bottom:1px solid var(--border); }
+    table.kv td:first-child { color:var(--muted); white-space:nowrap; width:1%; padding-right:12px; }
+    table.kv td:last-child { word-break:break-all; }
     pre { background:#0c0f14; border:1px solid var(--border); padding:8px; border-radius:10px; overflow:auto; min-height:60px; }
     .big { font-size:1.4rem; font-weight:600; margin:6px 0; }
+    .big.stale { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -36,7 +50,7 @@
     <strong>HALO</strong>
     <a href="/">Motor Dashboard</a>
     <a href="/daq">LCR Meter DAQ</a>
-    <span id="ConnNote" class="pill">DAQ: idle</span>
+    <span id="ConnNote" class="pill">DAQ: ...</span>
   </nav>
 
   <div class="grid">
@@ -46,38 +60,61 @@
 
       <label for="Mode">Measurement Mode</label>
       <select id="Mode">
-        <option value="RX">RX (Resistance + Reactance)</option>
+        <option value="CPD">CPD (Cp + Dissipation)</option>
+        <option value="CPQ">CPQ (Cp + Q factor)</option>
+        <option value="CPG">CPG (Cp + Conductance)</option>
+        <option value="CPRP">CPRP (Cp + Rp)</option>
+        <option value="CSD">CSD (Cs + Dissipation)</option>
+        <option value="CSQ">CSQ (Cs + Q factor)</option>
+        <option value="CSRS">CSRS (Cs + Rs)</option>
+        <option value="LSRS">LSRS (Ls + Rs)</option>
+        <option value="LSRD">LSRD (Ls + Rdc)</option>
+        <option value="LPRS">LPRS (Lp + Rs)</option>
+        <option value="LPRP">LPRP (Lp + Rp)</option>
+        <option value="RX" selected>RX (Resistance + Reactance)</option>
         <option value="ZTD">ZTD (Impedance + Phase deg)</option>
-        <option value="CPD">CPD (Capacitance + Dissipation)</option>
-        <option value="CPQ">CPQ (Capacitance + Q Factor)</option>
-        <option value="CPRP">CPRP (Capacitance + Rp)</option>
-        <option value="LSRS">LSRS (Inductance + Rs)</option>
-        <option value="LPRP">LPRP (Inductance + Rp)</option>
         <option value="ZTR">ZTR (Impedance + Phase rad)</option>
       </select>
 
-      <label for="Freq">Test Frequency (Hz)</label>
-      <input id="Freq" type="number" step="1" min="100" max="200000" value="1000" />
+      <label for="Freq">Test Frequency (Hz, 100 to 500000)</label>
+      <input id="Freq" type="number" step="any" min="100" max="500000" value="1000" />
 
-      <label for="Voltage">AC Test Voltage (V)</label>
+      <label for="Voltage">AC Test Level (V, 0.01 to 2.0)</label>
       <input id="Voltage" type="number" step="0.01" min="0.01" max="2.0" value="1.0" />
 
-      <label for="Interval">Recording Interval (s)</label>
-      <input id="Interval" type="number" step="0.01" min="0.05" value="0.5" />
+      <label for="Interval">Recording Interval (s, 0.05 to 3600)</label>
+      <input id="Interval" type="number" step="0.01" min="0.05" max="3600" value="0.5" />
 
-      <label for="FileName">CSV file</label>
-      <input id="FileName" type="text" value="measurements.csv" />
+      <label for="RunName">Run name (letters, digits, . _ -)</label>
+      <input id="RunName" type="text" maxlength="64" value="lcr" pattern="[A-Za-z0-9._\-]{1,64}" />
+
+      <label for="Note">Note (saved in the run manifest)</label>
+      <input id="Note" type="text" maxlength="500" value="" />
 
       <div class="row">
-        <button onclick="ConnectLcr()">Connect</button>
-        <button onclick="StartDaq()">Start Recording</button>
-        <button onclick="StopDaq()">Stop Recording</button>
-        <button onclick="SingleMeasure()">Single Shot</button>
+        <button id="BtnConnect" onclick="ConnectLcr()">Connect</button>
+        <button id="BtnStart" onclick="StartDaq()">Start Recording</button>
+        <button id="BtnStop" onclick="StopDaq()">Stop Recording</button>
+        <button id="BtnMeasure" onclick="SingleMeasure()">Single Shot</button>
       </div>
-      <div class="row">
-        <span class="pill">Status: <span id="StatusText">Idle</span></span>
-        <span id="DevicePill" class="pill">device: --</span>
-      </div>
+      <div id="MsgLine" class="msg"></div>
+    </div>
+
+    <!-- Status Card -->
+    <div class="card">
+      <h3>Recorder Status</h3>
+      <table class="kv">
+        <tr><td>State</td><td id="StState">--</td></tr>
+        <tr><td>Instrument</td><td id="StIdn">--</td></tr>
+        <tr><td>Meter config</td><td id="StConfig">--</td></tr>
+        <tr><td>Run folder</td><td id="StRunDir">--</td></tr>
+        <tr><td>Started (UTC)</td><td id="StStart">--</td></tr>
+        <tr><td>Samples</td><td id="StSamples">--</td></tr>
+        <tr><td>Skipped slots</td><td id="StSkipped">--</td></tr>
+        <tr><td>Errors</td><td id="StErrors">--</td></tr>
+        <tr><td>Last error</td><td id="StLastError">--</td></tr>
+        <tr><td>Stop reason</td><td id="StStopReason">--</td></tr>
+      </table>
     </div>
 
     <!-- Live Data Card -->
@@ -86,9 +123,10 @@
       <div id="ModeBadge" class="pill" style="margin-bottom:8px">Mode: --</div>
       <div class="big" id="PrimaryVal">Primary: --</div>
       <div class="big" id="SecondaryVal">Secondary: --</div>
-      <div style="margin-top:8px">
+      <div class="row">
         <span id="StatusBadge" class="pill">Status: --</span>
-        <span id="TimeBadge" class="pill">t = -- s</span>
+        <span id="AgeBadge" class="pill">age: --</span>
+        <span id="IndexBadge" class="pill">sample: --</span>
       </div>
       <h3 style="margin-top:16px">Raw Response</h3>
       <pre id="LiveBox">--</pre>
@@ -96,149 +134,209 @@
   </div>
 
 <script>
+  const PollPeriodMs = 1000;
+  let LastStatus = null;      // latest /daq/status reply
+  let SingleShot = null;      // latest /daq/measure reply (shown while not recording)
+  let SingleShotTakenMs = 0;  // browser clock when SingleShot arrived
+  const SingleShotIntervalS = 5;  // a single shot counts as stale after 3 x 5 s
+
+  // fetch + JSON; a non-2xx reply throws with the server's error text
   async function RequestJson(url) {
     const r = await fetch(url, {cache:"no-store"});
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
+    let js = null;
+    try { js = await r.json(); } catch(e) { js = null; }
+    if (!r.ok) {
+      throw new Error((js && js.error) ? js.error : `HTTP ${r.status}`);
+    }
+    return js;
   }
 
-  function SetConnNote(s, ok){
-    const el = document.getElementById("ConnNote");
-    el.textContent = `DAQ: ${s}`;
-    el.className = ok ? "pill ok" : "pill";
+  function SetText(id, text){ document.getElementById(id).textContent = text; }
+
+  function ShowMsg(text, kind){
+    const el = document.getElementById("MsgLine");
+    el.textContent = text || "";
+    el.className = kind ? `msg ${kind}` : "msg";
   }
 
-  async function ConnectLcr(){
-    try {
-      const js = await RequestJson("/daq/connect");
-      if (js.ok) {
-        document.getElementById("StatusText").textContent = "Connected";
-        document.getElementById("DevicePill").textContent = `device: ${js.device}`;
-        SetConnNote("connected", true);
-      } else {
-        document.getElementById("StatusText").textContent = js.error || "Error";
-        SetConnNote("error", false);
+  function SetPill(id, text, kind){
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = kind ? `pill ${kind}` : "pill";
+  }
+
+  // Runs one user action with its button disabled, so a double click
+  // cannot fire a second request.
+  async function WithButton(id, fn){
+    const btn = document.getElementById(id);
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try { await fn(); }
+    finally { btn.disabled = false; }
+  }
+
+  function ConnectLcr(){
+    return WithButton("BtnConnect", async () => {
+      ShowMsg("Connecting...", null);
+      try {
+        const js = await RequestJson("/daq/connect");
+        ShowMsg(`Connected: ${js.idn}`, "ok");
+      } catch(e) {
+        ShowMsg(`Connect failed: ${e.message}`, "err");
       }
-    } catch(e) {
-      document.getElementById("StatusText").textContent = "Connection failed";
-      SetConnNote("error", false);
-      alert(`Connect failed: ${e.message}`);
-    }
+      await PollStatus();
+    });
   }
 
-  async function StartDaq(){
-    const qs = new URLSearchParams({
-      file:     document.getElementById("FileName").value || "measurements.csv",
-      interval: document.getElementById("Interval").value || "0.5",
-      mode:     document.getElementById("Mode").value,
-      freq:     document.getElementById("Freq").value,
-      voltage:  document.getElementById("Voltage").value,
-    }).toString();
-
-    try {
-      const js = await RequestJson(`/daq/start?${qs}`);
-      if (js.ok) {
-        document.getElementById("StatusText").textContent = "Recording...";
-        SetConnNote("recording", true);
-      } else {
-        document.getElementById("StatusText").textContent = js.error || "Error";
-        SetConnNote("error", false);
-        alert(`Start failed: ${js.error}`);
+  function StartDaq(){
+    return WithButton("BtnStart", async () => {
+      const qs = new URLSearchParams({
+        file:     document.getElementById("RunName").value.trim(),
+        interval: document.getElementById("Interval").value || "0.5",
+        mode:     document.getElementById("Mode").value,
+        freq:     document.getElementById("Freq").value,
+        voltage:  document.getElementById("Voltage").value,
+        note:     document.getElementById("Note").value,
+      }).toString();
+      ShowMsg("Configuring meter and starting...", null);
+      try {
+        const js = await RequestJson(`/daq/start?${qs}`);
+        const rb = js.readback || {};
+        ShowMsg(`Recording to ${js.run_dir} (meter reads back ${rb.mode}, `
+                + `${rb.frequency_hz} Hz, ${rb.voltage_v} V)`, "ok");
+        SingleShot = null;
+      } catch(e) {
+        ShowMsg(`Start failed: ${e.message}`, "err");
       }
-    } catch(e) {
-      document.getElementById("StatusText").textContent = "Error";
-      SetConnNote("error", false);
-      alert(`Start failed: ${e.message}`);
-    }
+      await PollStatus();
+    });
   }
 
-  async function StopDaq(){
-    try {
-      await RequestJson("/daq/stop");
-      document.getElementById("StatusText").textContent = "Stopped";
-      SetConnNote("stopped", false);
-    } catch(e) {
-      alert(`Stop failed: ${e.message}`);
-    }
-  }
-
-  async function SingleMeasure(){
-    try {
-      const js = await RequestJson("/daq/measure");
-      if (js.error) {
-        alert(`Measure failed: ${js.error}`);
-        return;
+  function StopDaq(){
+    return WithButton("BtnStop", async () => {
+      try {
+        const js = await RequestJson("/daq/stop");
+        const st = js.status || {};
+        ShowMsg(st.run_dir ? `Stopped. Data in ${st.run_dir}` : "Stopped.", "ok");
+      } catch(e) {
+        ShowMsg(`Stop failed: ${e.message}`, "err");
       }
-      UpdateDisplay(js);
-    } catch(e) {
-      alert(`Measure failed: ${e.message}`);
-    }
+      await PollStatus();
+    });
   }
 
-  function FormatValue(val, mode, which){
-    if (val == null) return "--";
-    const v = Number(val);
-    // Capacitance modes: show nF or pF
-    if (which === "primary" && mode && mode.startsWith("C")) {
-      if (Math.abs(v) < 1e-9) return `${(v*1e12).toFixed(3)} pF`;
-      return `${(v*1e9).toFixed(3)} nF`;
-    }
-    // Inductance modes: show uH or mH
-    if (which === "primary" && mode && mode.startsWith("L")) {
-      if (Math.abs(v) < 1e-3) return `${(v*1e6).toFixed(3)} uH`;
-      return `${(v*1e3).toFixed(3)} mH`;
-    }
-    // Impedance/resistance: show Ohm
-    if (which === "primary" && (mode === "RX" || mode === "ZTD" || mode === "ZTR")) {
-      return `${v.toExponential(4)} Ohm`;
-    }
-    return v.toExponential(4);
+  function SingleMeasure(){
+    return WithButton("BtnMeasure", async () => {
+      try {
+        const js = await RequestJson("/daq/measure");
+        js.age_s = 0;
+        SingleShot = js;
+        SingleShotTakenMs = Date.now();
+        RenderSample(js, SingleShotIntervalS);
+        ShowMsg("Single measurement taken.", "ok");
+      } catch(e) {
+        ShowMsg(`Measure failed: ${e.message}`, "err");
+      }
+    });
   }
 
-  function UpdateDisplay(js){
-    const mode = js.mode || "--";
-    document.getElementById("ModeBadge").textContent = `Mode: ${mode}`;
-    document.getElementById("PrimaryVal").textContent =
-      `Primary: ${FormatValue(js.primary, mode, "primary")}`;
-    document.getElementById("SecondaryVal").textContent =
-      `Secondary: ${FormatValue(js.secondary, mode, "secondary")}`;
+  function RenderStatus(st){
+    const state = st.state || "idle";
+    let pillText, pillKind;
+    if (state === "recording") { pillText = "recording"; pillKind = "ok"; }
+    else if (state === "error") { pillText = "error"; pillKind = "err"; }
+    else if (st.connected)      { pillText = "connected, idle"; pillKind = "info"; }
+    else                        { pillText = "not connected"; pillKind = null; }
+    SetPill("ConnNote", `DAQ: ${pillText}`, pillKind);
 
-    const sBadge = document.getElementById("StatusBadge");
-    if (js.status != null) {
-      sBadge.textContent = js.status === 0 ? "Status: OK" : `Status: ${js.status}`;
-      sBadge.className = js.status === 0 ? "pill ok" : "pill err";
+    SetText("StState", state);
+    SetText("StIdn", st.idn ? `${st.idn} (${st.resource})` : "not connected");
+    const c = st.config;
+    SetText("StConfig", c ? `${c.mode || "?"}, ${c.frequency ?? "?"} Hz, ${c.voltage ?? "?"} V` : "--");
+    SetText("StRunDir", st.run_dir || "--");
+    SetText("StStart", st.start_utc || "--");
+    SetText("StSamples", String(st.sample_count ?? "--"));
+    SetText("StSkipped", String(st.skipped_count ?? "--"));
+    SetText("StErrors", `${st.error_count ?? "--"} (in a row: ${st.consecutive_errors ?? "--"})`);
+    SetText("StLastError", st.last_error || "--");
+    SetText("StStopReason", st.stop_reason || "--");
+  }
+
+  // interval_s: recording interval, or null for a single shot / no run.
+  function RenderSample(js, interval_s){
+    const d = js.display || {};
+    const mode = d.mode || js.mode || "--";
+    const age = (js.age_s == null) ? null : Number(js.age_s);
+    // Stale when older than 3 recording intervals.
+    const stale = (age == null) || (interval_s != null && age > 3 * interval_s);
+    const hasSample = js.status != null;
+
+    SetText("ModeBadge", `Mode: ${mode}`);
+    const pEl = document.getElementById("PrimaryVal");
+    const sEl = document.getElementById("SecondaryVal");
+    if (!hasSample || stale) {
+      pEl.textContent = "Primary: ---";
+      sEl.textContent = "Secondary: ---";
+      pEl.className = "big stale";
+      sEl.className = "big stale";
+    } else {
+      pEl.textContent = `Primary: ${d.primary_text ?? "--"}`;
+      sEl.textContent = `Secondary: ${d.secondary_text ?? "--"}`;
+      pEl.className = "big";
+      sEl.className = "big";
     }
-    if (js.timestamp != null) {
-      document.getElementById("TimeBadge").textContent = `t = ${Number(js.timestamp).toFixed(3)} s`;
+
+    if (!hasSample) {
+      SetPill("StatusBadge", "Status: --", null);
+    } else if (d.overload) {
+      SetPill("StatusBadge", `Status: ${d.status_text} (overload or no number)`, "warn");
+    } else {
+      SetPill("StatusBadge", `Status: ${d.status_text}`, js.status === 0 ? "ok" : "err");
     }
+
+    if (age == null) {
+      SetPill("AgeBadge", "age: --", null);
+    } else {
+      SetPill("AgeBadge", `age: ${age.toFixed(1)} s${stale ? " (stale)" : ""}`, stale ? "warn" : "ok");
+    }
+    SetPill("IndexBadge", `sample: ${js.sample_index ?? "--"}`, null);
     document.getElementById("LiveBox").textContent = JSON.stringify(js, null, 2);
   }
 
-  // Poll live data every second while recording
-  async function FetchLiveData(){
+  async function PollStatus(){
+    const st = await RequestJson("/daq/status");
+    LastStatus = st;
+    RenderStatus(st);
+    return st;
+  }
+
+  // One poll cycle: status first (it drives the pill), then the live
+  // sample. Chained with setTimeout so a slow reply never stacks requests.
+  async function PollOnce(){
     try {
+      const st = await PollStatus();
       const js = await RequestJson("/daq/data");
-      if (js && js.timestamp != null) {
-        UpdateDisplay(js);
-        SetConnNote("recording", true);
+      if (js.status != null) {
+        RenderSample(js, st.interval_s);
+      } else if (SingleShot && !st.recording) {
+        // Keep showing the single shot; it goes stale after
+        // 3 x SingleShotIntervalS like a recorded sample would.
+        SingleShot.age_s = (Date.now() - SingleShotTakenMs) / 1000;
+        RenderSample(SingleShot, SingleShotIntervalS);
+      } else {
+        RenderSample(js, st.interval_s);
       }
     } catch(e) {
-      // silent -- instrument may not be connected
+      SetPill("ConnNote", "DAQ: server unreachable", "warn");
     }
   }
-  setInterval(FetchLiveData, 1000);
 
-  // Check connection status on load
-  (async function(){
-    try {
-      const js = await RequestJson("/daq/status");
-      if (js.connected) {
-        document.getElementById("DevicePill").textContent = `device: ${js.device}`;
-        SetConnNote(js.recording ? "recording" : "connected", js.connected);
-        document.getElementById("StatusText").textContent = js.recording ? "Recording..." : "Connected";
-      }
-    } catch(e) {}
-  })();
+  async function PollLoop(){
+    await PollOnce();
+    setTimeout(PollLoop, PollPeriodMs);
+  }
+
+  PollLoop();
 </script>
 </body>
 </html>

@@ -10,7 +10,7 @@ The ARSS is a two-node embedded system connected through a local router. A user 
 
 **Arduino Mega 2560 (Motor Controller)** — generates hardware-timed stepper pulses via Timer1 CTC mode on pin D11 (OC1A). Accepts a text-based serial command protocol for frequency, RPM, direction, and step-count control. Also reads a DHT22 sensor for environmental monitoring.
 
-**BK Precision 894 LCR Meter** — connected to the Pi via USB-TMC. Controlled through SCPI commands for impedance, capacitance, inductance, and related measurements across configurable test frequencies and voltages.
+**BK Precision 894 LCR Meter** — connected to the Pi via USB-TMC, driven through PyVISA with the pure-Python pyvisa-py backend (libusb via pyusb; the kernel `usbtmc` driver is blacklisted). Controlled through SCPI commands for impedance, capacitance, inductance, and related measurements across configurable test frequencies (100 Hz to 500 kHz) and AC levels (0.01 to 2.0 V).
 
 ```
   [User Laptop]
@@ -30,8 +30,9 @@ Serial  USB-TMC  CSI (x4)
 HALO_ARSS_Code/
 |-- RaspberryPiWebserver/
 |   |-- app.py               Flask dashboard + API server
-|   |-- instruments.py        USB-TMC instrument drivers (BK894, TekMSO24)
-|   |-- lcr_controller.py     Background LCR recording manager
+|   |-- instruments.py        BK894 driver (pyvisa-py), ported from Digital_Multitool
+|   |-- lcr_format.py         LCR units per mode, overload-safe display values
+|   |-- lcr_controller.py     Background LCR recording manager (run folders + manifest)
 |   |-- halodashboard.service  systemd unit for auto-start
 |   |-- start_dashboard.sh     Shell launcher
 |
@@ -40,13 +41,14 @@ HALO_ARSS_Code/
 |   |-- ArduinoUnoControl.ino    Legacy: Uno R4 WiFi with onboard HTTP server
 |   |-- ArduinoNanoControl.ino   Legacy: Nano Timer2 PWM generator
 |
-|-- SCPI/
-|   |-- instruments.py           Symlink to RaspberryPiWebserver/instruments.py
-|   |-- instrument_gui.py        Standalone tkinter GUI for BK894 + TekMSO24
-|   |-- LCR_Comm.py              Legacy: tkinter LCR recorder (network/VXI-11)
-|   |-- LCR_COM2.py              Legacy: tkinter LCR recorder (USB, timed duration)
-|   |-- LCR_USB_Test.py          Legacy: quick VISA enumeration test
-|   |-- LcrMeterPythonGui.py     Legacy: frequency sweep GUI with matplotlib
+|-- deploy/
+|   |-- 99-bk894.rules           udev rule: non-root access to the BK894 (USB 0471:2827)
+|   |-- blacklist-usbtmc.conf    modprobe blacklist for the kernel usbtmc driver
+|
+|-- bench/
+|   |-- bk894_smoke.py           Hand-run BK894 check on the Pi (IDN, :VOLT read-back, fetches)
+|
+|-- tests/                       Hardware-free unit tests (python -m unittest discover -s tests -v)
 |
 |-- html/
 |   |-- index.html               Motor + environment + camera dashboard
@@ -79,11 +81,12 @@ HALO_ARSS_Code/
 
 ### LCR Meter DAQ (`/daq`)
 
-- Connect to the BK Precision 894 over USB-TMC (auto-detects `/dev/usbtmc*`)
-- Configure measurement mode (RX, CPD, ZTD, LSRS, etc.), test frequency, and AC voltage
-- Start/stop background CSV recording at configurable intervals
+- Connect to the BK Precision 894 over USB-TMC (found by USB VID/PID `0471:2827`; the `*IDN?` reply must name model 894)
+- Configure all 14 measurement modes (CPD, CSRS, RX, ZTD, LSRS, etc.), test frequency (100 Hz to 500 kHz), and AC level (0.01 to 2.0 V, sent as `:VOLT`); mode, frequency and level are read back from the meter and a mismatch stops the start
+- Background recording on a fixed time grid; overrun slots are skipped and counted, and the run stops after 5 consecutive measurement errors
+- Each run writes `<data dir>/<UTC stamp>_<run name>/lcr.csv` (sample index, UTC ISO 8601 time, monotonic time, raw primary/secondary/status) and `manifest.json` (IDN, requested and read-back settings, interval, counts, last error, software git revision, note). The data dir is `$ARSS_DATA_DIR`, default `~/arss-data`; run names allow only `A-Z a-z 0-9 . _ -` and existing runs are never overwritten
 - Single-shot measurements
-- Live display with mode-aware unit formatting (nF, pF, uH, mH, Ohm)
+- Live display with SI-prefixed units per mode, overload readings shown as OVL, and sample age (values older than 3 intervals show as stale)
 
 ## Serial Command Protocol (Arduino Mega)
 
@@ -104,11 +107,18 @@ HALO_ARSS_Code/
 
 ## Instrument Drivers
 
-`instruments.py` provides lightweight Python classes for USB-TMC instruments using raw `/dev/usbtmc*` file I/O — no pyvisa or NI-VISA required.
+`instruments.py` is a port of the bench-proven BK894 driver from the Digital_Multitool repository (commit f22527f). It talks to the meter through `pyvisa.ResourceManager('@py')` (pyvisa-py over libusb), with a 2 s I/O timeout, a device clear on open, and a per-instrument lock around every write/read/query.
 
-**BK894** — B&K Precision 894 LCR Meter. Supports 11 measurement modes, frequency/voltage configuration, and `measure()` returning `(primary, secondary, status)`.
+**BK894** — B&K Precision 894 LCR Meter. 14 measurement modes, frequency/AC-level configuration with read-back (`configure_and_verify`), desync recovery (drain and retry), and `measure()` returning `(primary, secondary, status)`.
 
-**TekMSO24** — Tektronix MSO24 Oscilloscope. Supports 4-channel vertical/horizontal/trigger configuration, automated measurements, and binary waveform capture.
+Known BK894 quirks (from Digital_Multitool, bench-verified there on its meter, not yet on the rig meter):
+
+- The AC test level command is plain `:VOLT` (query `:VOLT?`). `:LEV:VOLT` and `:VOLT:LEV` are silently ignored.
+- The meter clamps the level at 2.0 V and the frequency at 500 kHz.
+- A late reply can shift every later query by one answer; the driver drains the input buffer and retries.
+- The USB serial-number descriptor is garbage; the real serial is in `*IDN?`.
+
+PC-side bench work with the LCR meter and the oscilloscope lives in Digital_Multitool; the old `SCPI/` folder (a third copy of the driver and a tkinter GUI) was removed.
 
 ## Setup
 
@@ -121,7 +131,8 @@ git clone <repo-url> HALODashboard
 cd HALODashboard/RaspberryPiWebserver
 python3 -m venv venv
 source venv/bin/activate
-pip install flask pyserial
+sudo apt install libusb-1.0-0   # libusb runtime for pyusb / pyvisa-py
+pip install -r ../requirements.txt
 
 # Copy the systemd service
 sudo cp halodashboard.service /etc/systemd/system/
@@ -132,18 +143,33 @@ sudo systemctl start halodashboard
 
 The service auto-starts on boot, sets the camera mux to channel 0, and serves the dashboard on port 5000.
 
+#### LCR meter access (BK894)
+
+The dashboard reaches the meter through libusb, so the kernel `usbtmc` driver must not claim it and the service user needs access to the USB device node. From the repository root:
+
+```bash
+sudo cp deploy/blacklist-usbtmc.conf /etc/modprobe.d/
+sudo modprobe -r usbtmc
+sudo cp deploy/99-bk894.rules /etc/udev/rules.d/
+sudo udevadm control --reload
+# unplug and replug the meter so the rule applies
+```
+
+The rule grants mode 0666 on the meter only (VID 0471, PID 2827), mirroring the Digital_Multitool setup; the rule file shows a stricter `plugdev` variant. These two files have not been tested on the Pi yet. To check the whole chain, stop the dashboard (`sudo systemctl stop halodashboard`) and run `python3 bench/bk894_smoke.py`: it prints `*IDN?`, sets CPD / 1 kHz / 0.5 V, prints the `:VOLT?` read-back, takes 10 readings, and exits nonzero on a mismatch.
+
+Run data goes to `$ARSS_DATA_DIR` (default `~/arss-data` of the service user).
+
+### Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The tests use fake transports and need neither hardware nor pyvisa.
+
 ### Arduino Mega
 
 Flash `ArduinoFirmwares/ArduinoMegaControl.ino` using the Arduino IDE or PlatformIO. Requires the `DHT` library.
-
-### Standalone GUI (no Pi needed)
-
-```bash
-cd SCPI/
-python3 instrument_gui.py
-```
-
-Connects to the BK894 at `/dev/usbtmc1` and TekMSO24 at `/dev/usbtmc2`. Provides tabbed control for both instruments plus multi-instrument CSV data logging.
 
 ## Hardware
 
