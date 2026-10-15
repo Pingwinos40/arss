@@ -568,9 +568,35 @@ def DaqData():
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
+BIND_ENV = "ARSS_BIND"
+PORT_ENV = "ARSS_PORT"
+DEFAULT_BIND = "127.0.0.1"
+DEFAULT_PORT = 5000
+
+def ResolveBindAddress(env=None):
+    """(host, port) for app.run, from ARSS_BIND and ARSS_PORT.
+
+    The routes are unauthenticated GETs that move the motor (#14), so the
+    default is loopback only: reach the dashboard through an SSH tunnel.
+    ARSS_BIND=0.0.0.0 exposes it to every network the Pi is on.
+    """
+    env = os.environ if env is None else env
+    host = env.get(BIND_ENV, "").strip() or DEFAULT_BIND
+    portText = env.get(PORT_ENV, "").strip()
+    if not portText:
+        return host, DEFAULT_PORT
+    try:
+        port = int(portText)
+    except ValueError:
+        raise ValueError(f"{PORT_ENV} must be an integer, got {portText!r}") from None
+    if not 1 <= port <= 65535:
+        raise ValueError(f"{PORT_ENV} must be 1 to 65535, got {port}")
+    return host, port
+
 if __name__ == "__main__":
     # debug=True is gone: the Werkzeug debugger allows arbitrary code
-    # execution from any host that can reach port 5000. The routes are still
+    # execution from any host that can reach the port. The routes are still
     # unauthenticated GETs that move the motor; see issue #14 for auth and
     # POST. threaded=True keeps /stop answerable while another request waits.
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    host, port = ResolveBindAddress()
+    app.run(host=host, port=port, debug=False, threaded=True)

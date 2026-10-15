@@ -17,6 +17,11 @@ SupplementaryGroups=video gpio dialout tty
 WorkingDirectory=/home/admin/arss/RaspberryPiWebserver
 Environment="PATH=/home/admin/arss/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment=PYTHONUNBUFFERED=1
+# The dashboard listens on 127.0.0.1:5000 only; reach it through an SSH tunnel
+# (see README "Remote access"). ARSS_BIND=0.0.0.0 re-exposes the
+# unauthenticated motor-control routes (#14) to every network the Pi is on.
+# Uncomment it only on an isolated rig network, never on a shared LAN.
+#Environment=ARSS_BIND=0.0.0.0
 # small settle so CSI + mux are ready
 ExecStartPre=/bin/sleep 2
 # pick a default mux channel on boot (Cam 0)

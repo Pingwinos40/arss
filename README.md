@@ -4,7 +4,7 @@ Code and scripts for the **Hexagonal Automated Load Oscillator (HALO)** and its 
 
 ## System Overview
 
-The ARSS is a two-node embedded system connected through a local router. A user joins the router's Wi-Fi network and controls the entire experiment from a browser-based dashboard.
+The ARSS is a two-node embedded system supervised by the Pi. A user controls the entire experiment from a browser-based dashboard, reached through an SSH tunnel to the Pi (see Remote access).
 
 **Raspberry Pi 5 (Supervisor)**: runs a Flask web server that serves the interactive dashboard, owns the serial link to the Arduino, streams video from the Arducam camera mux, and manages background LCR meter data acquisition.
 
@@ -15,7 +15,7 @@ The ARSS is a two-node embedded system connected through a local router. A user 
 ```
   [User Laptop]
        |
-   Wi-Fi (router)
+   network (SSH tunnel)
        |
   [Raspberry Pi 5]
     /     |     \
@@ -175,7 +175,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now halodashboard
 ```
 
-The service starts on boot, sets the camera mux to channel 0, and serves the dashboard on port 5000. For a manual run (with the service stopped), use `RaspberryPiWebserver/start_dashboard.sh`. A different user or install folder means editing `User=` and the `/home/admin/arss` paths in the service file.
+The service starts on boot, sets the camera mux to channel 0, and serves the dashboard on 127.0.0.1:5000 (see Remote access). For a manual run (with the service stopped), use `RaspberryPiWebserver/start_dashboard.sh`. A different user or install folder means editing `User=` and the `/home/admin/arss` paths in the service file.
 
 Not yet checked on the Pi: the service and `app.py` drive the camera mux with `gpioset gpiochip0`; confirm with `gpiodetect` that the 40-pin header is `gpiochip0` on the installed kernel.
 
@@ -195,6 +195,25 @@ The rule grants mode 0666 on the meter only (VID 0471, PID 2827), mirroring the 
 
 Run data goes to `$ARSS_DATA_DIR` (default `~/arss-data` of the service user).
 
+#### Remote access
+
+The dashboard listens on `127.0.0.1` by default, so only the Pi itself can reach it. From your laptop, open an SSH tunnel and browse through it:
+
+```bash
+ssh -L 5000:localhost:5000 <user>@<pi-host>
+```
+
+Then open http://localhost:5000 while the SSH session stays open. `<user>` is the account on the Pi and `<pi-host>` its hostname or address on your network.
+
+Two environment variables, read by `app.py` at startup, change the listener:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ARSS_BIND` | `127.0.0.1` | Address to bind. `0.0.0.0` restores network access for every host that can reach the Pi; use it only on an isolated rig network (see Safety Notes) |
+| `ARSS_PORT` | `5000` | TCP port (1 to 65535) |
+
+For the service, set them with an `Environment=` line in `halodashboard.service` (a commented `ARSS_BIND=0.0.0.0` line is there), then `sudo systemctl daemon-reload` and `sudo systemctl restart halodashboard`. For a manual run, export them before `start_dashboard.sh`.
+
 ### Tests
 
 ```bash
@@ -211,7 +230,7 @@ Flash `ArduinoFirmwares/ArduinoMegaControl.ino` using the Arduino IDE or Platfor
 
 - **No firmware deadman yet (#9).** If the Pi, the dashboard, or the USB link dies while the motor runs, the motor keeps running. While the link is DOWN, STOP cannot reach the Mega.
 - **Max RPM is enforced only on the Pi (#10).** Any other client on the serial port can exceed it.
-- **No authentication (#14).** Every route, including motor control, is an unauthenticated GET on port 5000. Keep the rig on its own isolated network.
+- **No authentication (#14).** Every route, including motor control, is an unauthenticated GET. The dashboard therefore listens on `127.0.0.1` by default and is reached through an SSH tunnel (see Remote access), so only users who can log in to the Pi can drive the motor. `ARSS_BIND=0.0.0.0` exposes the routes to anyone on the network; set it only on an isolated rig network, never on a shared LAN.
 
 ## Hardware
 
