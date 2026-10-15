@@ -61,6 +61,7 @@ arss/
 |   |-- config.txt              /boot/firmware/config.txt for the camera board
 |
 |-- requirements.txt            Python dependencies for the Pi app
+|-- AI_ATTRIBUTION.md           Which AI models were used, for what, and what was verified
 ```
 
 ## Dashboard Features
@@ -221,10 +222,6 @@ Flash `ArduinoFirmwares/ArduinoMegaControl.ino` using the Arduino IDE or Platfor
 - DHT22 temperature/humidity sensor (on Mega pin D53)
 - TB6600 or similar stepper driver (STEP on Mega D11, DIR on D33); set `SETPPR` to match its microstep DIP setting (#28)
 - Local Wi-Fi router (dedicated network for the test rig)
-
-## AI Attribution
-
-Portions of the code, documentation, and system architecture in this repository were developed with assistance from **Anthropic Claude** (Opus 4.6 and Sonnet 4.6). This includes the instrument driver library (`instruments.py`), the Flask dashboard and DAQ integration, Arduino firmware refinements, and this README. All AI-generated content was reviewed, tested, and validated by the author.
 
 ## Author
 
