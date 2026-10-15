@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Vendored third-party files: keep exact bytes (SRI hashes in index.html).
+static/vendor/** -text
