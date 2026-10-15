@@ -268,6 +268,10 @@
     const UPLOT_LOCAL_CSS = "/static/vendor/uplot/uPlot.min.css";
     const UPLOT_CDN_JS    = "https://unpkg.com/uplot@1.6.17/dist/uPlot.iife.min.js";
     const UPLOT_CDN_CSS   = "https://unpkg.com/uplot@1.6.17/dist/uPlot.min.css";
+    // SRI hashes of the vendored 1.6.17 files (npm tarball verified against the
+    // registry's sha512 integrity), so the fallback cannot load different bytes.
+    const UPLOT_CDN_JS_SRI  = "sha384-ZQMJolSBnNYZvYl4RIsowWxyMp4FOzy4QOlSDeXMCWJ8CxMSY6rK1FSGCEXJwvd1";
+    const UPLOT_CDN_CSS_SRI = "sha384-4MQaEqb46em5Tirg3on4yaYQ5ORcm1d+YcDWrD2pvuxCVbNm2R+QKKLRCTZKpuJj";
 
     function Css(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
     function $(id){ return document.getElementById(id); }
@@ -747,19 +751,21 @@
     });
 
     // ---------- uPlot loading: local copy first, unpkg fallback (#33) ----------
-    function LoadScript(src){
+    function LoadScript(src, integrity){
       return new Promise((resolve, reject) => {
         const s = document.createElement("script");
+        if (integrity){ s.integrity = integrity; s.crossOrigin = "anonymous"; }
         s.src = src;
         s.onload = () => (window.uPlot ? resolve() : reject(new Error(`${src} did not define uPlot`)));
         s.onerror = () => reject(new Error(`could not load ${src}`));
         document.head.appendChild(s);
       });
     }
-    function LoadCss(href){
+    function LoadCss(href, integrity){
       return new Promise((resolve, reject) => {
         const l = document.createElement("link");
         l.rel = "stylesheet";
+        if (integrity){ l.integrity = integrity; l.crossOrigin = "anonymous"; }
         l.href = href;
         l.onload = () => resolve();
         l.onerror = () => { l.remove(); reject(new Error(`could not load ${href}`)); };
@@ -767,12 +773,12 @@
       });
     }
     async function LoadUplot(){
-      LoadCss(UPLOT_LOCAL_CSS).catch(() => LoadCss(UPLOT_CDN_CSS)).catch(() => {});
+      LoadCss(UPLOT_LOCAL_CSS).catch(() => LoadCss(UPLOT_CDN_CSS, UPLOT_CDN_CSS_SRI)).catch(() => {});
       try{
         await LoadScript(UPLOT_LOCAL_JS);
       }catch(localErr){
         console.warn(`${localErr.message}; trying unpkg`);
-        await LoadScript(UPLOT_CDN_JS);
+        await LoadScript(UPLOT_CDN_JS, UPLOT_CDN_JS_SRI);
       }
     }
     LoadUplot().then(() => {
