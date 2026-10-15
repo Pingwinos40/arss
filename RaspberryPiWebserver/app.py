@@ -18,78 +18,28 @@ lcr = LCRRecorder()  # used by /daq/* endpoints
 # -----------------------------------------------------------------------------
 # Arduino serial manager
 # -----------------------------------------------------------------------------
-ARDUINO_BAUD = 115200
-ARDUINO_PORT_HINTS = ["/dev/ttyACM*", "/dev/ttyUSB*"]  # Mega usually shows as ttyACM*
-SERIAL_OPEN_TIMEOUT_S = 3.0
-FIRST_OPEN_RESET_DELAY_S = 2.0
-READ_TIMEOUT_S = 0.5
-WRITE_LOCK = threading.Lock()
+# One MegaLink owns the port (issue #32). It runs a reader thread (port open,
+# read, reconnect), a writer thread (command queue, one command in flight) and
+# a poll thread (STATUS and SENSOR? every 0.5 s, also the host keepalive).
+# Routes read its cached snapshots and never touch the port themselves.
+# STOP and KILL bypass the queue (#8). The threads start on the first request,
+# so importing this module (tests, tooling) opens nothing.
+import math, re
+from mega_link import (MegaLink, LinkError, LinkDown, LinkNotReady, LinkTimeout,
+                       FirmwareError, CommandRejected)
 
-class MegaSerial:
-    def __init__(self):
-        self.Port = None
-        self.Ser = None
-        self.LastOpenAttempt = 0.0
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TEMPLATE_DIR = os.path.join(REPO_ROOT, "html")
+STATIC_DIR = os.path.join(REPO_ROOT, "static")
 
-    def _FindPort(self):
-        for pat in ARDUINO_PORT_HINTS:
-            for p in sorted(glob.glob(pat)):
-                return p
-        return None
+MEGA_POLL_PERIOD_S = 0.5
+MEGA_STALE_AFTER_S = 2.0
 
-    def _OpenIfNeeded(self):
-        if self.Ser and self.Ser.is_open:
-            return
-        now = time.time()
-        if now - self.LastOpenAttempt < 0.5:
-            return
-        self.LastOpenAttempt = now
+Mega = MegaLink(PollPeriodS=MEGA_POLL_PERIOD_S, StaleAfterS=MEGA_STALE_AFTER_S)
 
-        port = self._FindPort()
-        if not port:
-            raise SerialException("Arduino Mega serial port not found")
-
-        self.Port = port
-        self.Ser = serial.Serial(
-            port=self.Port,
-            baudrate=ARDUINO_BAUD,
-            timeout=READ_TIMEOUT_S
-        )
-        time.sleep(FIRST_OPEN_RESET_DELAY_S)
-        self.Ser.reset_input_buffer()
-
-    def SendLine(self, line):
-        with WRITE_LOCK:
-            self._OpenIfNeeded()
-            if not self.Ser or not self.Ser.is_open:
-                raise SerialException("Serial not open")
-            self.Ser.write((line.strip() + "\n").encode("ascii"))
-            self.Ser.flush()
-            time.sleep(0.15)
-            lines = []
-            while True:
-                try:
-                    raw = self.Ser.readline()
-                except SerialException:
-                    break
-                if not raw:
-                    break
-                s = raw.decode("ascii", errors="ignore").strip()
-                if s:
-                    lines.append(s)
-            return lines
-
-    def QueryJsonStatus(self):
-        lines = self.SendLine("STATUS")
-        for s in lines:
-            if s.startswith("{") and s.endswith("}"):
-                try:
-                    return json.loads(s)
-                except json.JSONDecodeError:
-                    pass
-        return {"raw": lines}
-
-Mega = MegaSerial()
+@app.before_request
+def EnsureMegaLinkStarted():
+    Mega.Start()
 
 # -----------------------------------------------------------------------------
 # Camera backend + Arducam CamArray mux (Pi 5 / Bookworm)
@@ -114,7 +64,22 @@ def PickCameraBackend():
                            "-f","mjpeg","-"])
     raise RuntimeError("No camera backend found (install rpicam-apps or ffmpeg).")
 
-CAM_KIND, CAM_CMD_BASE = PickCameraBackend()
+# Resolved lazily on the first camera request, so the app (and its tests)
+# start on a machine without rpicam or ffmpeg. Only a successful pick is
+# cached; a failed one is retried on the next camera request.
+_CamBackend = None
+_CamBackendLock = threading.Lock()
+
+def GetCameraBackend():
+    """Return (kind, cmd_base) or raise RuntimeError if no backend exists."""
+    global _CamBackend
+    with _CamBackendLock:
+        if _CamBackend is None:
+            _CamBackend = PickCameraBackend()
+        return _CamBackend
+
+def CameraUnavailableResponse(e):
+    return jsonify({"error": "camera unavailable", "detail": str(e)}), 503
 
 # Mux pins for Arducam CamArray V2.2 (GPIO4 = SEL, GPIO17 = EN1, GPIO18 = EN2)
 MUX_PINS = {"sel": 4, "en1": 17, "en2": 18}
@@ -142,10 +107,10 @@ def SetMuxChannel(ch: int):
     # settle a bit so ISP sees a stable source
     time.sleep(0.15)
 
-def GenerateMjpeg(ch: int):
+def GenerateMjpeg(ch: int, camCmdBase):
     # Switch mux, then launch camera backend; split stdout into JPEG frames
     SetMuxChannel(ch)
-    proc = subprocess.Popen(CAM_CMD_BASE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    proc = subprocess.Popen(camCmdBase, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
     buf = b""
     try:
         while True:
@@ -178,6 +143,14 @@ def GenerateMjpeg(ch: int):
 # -----------------------------------------------------------------------------
 # Web UI pages
 # -----------------------------------------------------------------------------
+# Issue #16: the templates live in <repo>/html and static assets in
+# <repo>/static, not next to this file, so both are resolved from this file's
+# location and work regardless of the working directory. Flask reads both
+# attributes lazily (first template lookup, first static request), so
+# assigning them here at import time is equivalent to passing them to Flask().
+app.template_folder = TEMPLATE_DIR
+app.static_folder = STATIC_DIR
+
 @app.route("/")
 def Root():
     return render_template("index.html")
@@ -199,24 +172,32 @@ def CameraSelect(ch):
 
 @app.route("/video.mjpg")
 def VideoStream():
+    try:
+        _camKind, camCmdBase = GetCameraBackend()
+    except RuntimeError as e:
+        return CameraUnavailableResponse(e)
     ch = request.args.get("ch", default="0")
     try:
         ch = int(ch)
     except ValueError:
         ch = 0
-    return Response(GenerateMjpeg(ch), mimetype="multipart/x-mixed-replace; boundary=frame")
+    return Response(GenerateMjpeg(ch, camCmdBase), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 @app.route("/snapshot.jpg")
 def Snapshot():
+    try:
+        camKind, _camCmdBase = GetCameraBackend()
+    except RuntimeError as e:
+        return CameraUnavailableResponse(e)
     ch = int(request.args.get("ch", 0))
     w = int(request.args.get("w", 640))
     h = int(request.args.get("h", 480))
     try:
         SetMuxChannel(ch)
-        if CAM_KIND == "rpicam" and FindExe("rpicam-still"):
+        if camKind == "rpicam" and FindExe("rpicam-still"):
             cmd = ["rpicam-still","-n","-o","-","--width",str(w),"--height",str(h)]
             data = subprocess.check_output(cmd, timeout=5)
-        elif CAM_KIND == "libcamera" and FindExe("libcamera-jpeg"):
+        elif camKind == "libcamera" and FindExe("libcamera-jpeg"):
             # libcamera-jpeg may not support --width/--height; fall back to default size
             data = subprocess.check_output(["libcamera-jpeg","-n","-o","-"], timeout=5)
         else:
@@ -233,26 +214,117 @@ def Snapshot():
 
 
 # -----------------------------------------------------------------------------
-# Max RPM tracking (server-side mirror of Arduino value for gating)
+# Input validation (#13) and firmware limits (ArduinoMegaControl.ino)
 # -----------------------------------------------------------------------------
-_max_rpm = 1200  # must match firmware default
+FW_HZ_MIN = 0.5             # SetPulseHz/RequestHz clamp
+FW_HZ_MAX = 50000.0
+FW_STEPS_MAX = 2000000000   # SETSTEPS clamp; 0 means stop
+FW_MAX_RPM_MIN = 1          # SETMAXRPM clamp
+FW_MAX_RPM_MAX = 100000
+# The firmware does not bound SETRAMP beyond >= 0. This host-side ceiling only
+# keeps the command line short and the value physically meaningful.
+HOST_RAMP_MAX_RPM_S = 100000.0
+DEFAULT_MAX_RPM = 1200      # firmware default; used only before the first STATUS
 
-def _get_max_rpm():
-    """Return the current max RPM (kept in sync with Arduino)."""
-    return _max_rpm
+# Accepted SETDIR tokens mapped to the canonical token we send. The firmware
+# treats anything starting with CW (any case), '1' or '+' as 1 and everything
+# else as 0, so only unambiguous spellings are accepted here.
+DIRECTION_TOKENS = {"CW": "CW", "CCW": "CCW", "1": "CW", "0": "CCW", "+": "CW", "-": "CCW"}
 
-def _check_rpm_limit(rpm, override):
-    """Return (ok, response) — if not ok, response is a 409 JSON."""
-    global _max_rpm
-    if rpm > _max_rpm and not override:
-        return False, (jsonify({
+class BadInput(ValueError):
+    pass
+
+def ParseFiniteFloat(name, default=None, lo=None, hi=None):
+    raw = request.args.get(name, default)
+    if raw is None or str(raw).strip() == "":
+        raise BadInput(f"{name} is required")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise BadInput(f"{name} must be a number")
+    if not math.isfinite(value):
+        raise BadInput(f"{name} must be finite")
+    if lo is not None and value < lo:
+        raise BadInput(f"{name} must be >= {lo}")
+    if hi is not None and value > hi:
+        raise BadInput(f"{name} must be <= {hi}")
+    return value
+
+def ParseBoundedInt(name, lo, hi):
+    raw = request.args.get(name, "")
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        raise BadInput(f"{name} must be an integer")
+    if value < lo or value > hi:
+        raise BadInput(f"{name} must be between {lo} and {hi}")
+    return value
+
+def ParseFlag(name, default):
+    return request.args.get(name, default).lower() in ("1", "true", "yes")
+
+def FormatNumber(value):
+    """Fixed-point text for a command argument (never exponent notation)."""
+    text = ("%.4f" % value).rstrip("0").rstrip(".")
+    return text if text not in ("", "-0") else "0"
+
+def LinkErrorResponse(e):
+    """Map link errors to HTTP: 400 bad command, 503 link down or not ready,
+    504 no reply in time, 502 firmware error."""
+    if isinstance(e, CommandRejected):
+        code = 400
+    elif isinstance(e, LinkDown):
+        code = 503
+    elif isinstance(e, LinkTimeout):
+        code = 504
+    elif isinstance(e, FirmwareError):
+        code = 502
+    else:
+        code = 500
+    return jsonify({"error": str(e), "link": Mega.LinkState()}), code
+
+def BadInputResponse(e):
+    return jsonify({"error": str(e)}), 400
+
+def ReplyValue(lines, pattern):
+    """Pull a value out of the firmware's acknowledgement line, or None."""
+    for line in lines:
+        m = re.search(pattern, line)
+        if m:
+            return m.group(1)
+    return None
+
+def CurrentStatusOr503():
+    """Firmware STATUS from this session; raises LinkDown if none yet."""
+    st = Mega.CurrentStatus()
+    if st is None:
+        if Mega.IsConnected():
+            raise LinkNotReady("firmware state unknown since (re)connect; waiting for STATUS")
+        raise LinkDown("link down")
+    return st
+
+# -----------------------------------------------------------------------------
+# Max RPM (firmware STATUS max_rpm is the source of truth)
+# -----------------------------------------------------------------------------
+def GetMaxRpm():
+    """Max RPM as last reported by the firmware's STATUS this session."""
+    st = Mega.CurrentStatus()
+    if st is not None and isinstance(st.get("max_rpm"), (int, float)):
+        return st["max_rpm"]
+    return DEFAULT_MAX_RPM
+
+def CheckRpmLimit(rpm, override):
+    """Return a 409 JSON response if rpm exceeds the limit, else None."""
+    maxRpm = GetMaxRpm()
+    if rpm > maxRpm and not override:
+        return jsonify({
             "error": "exceeds_max_rpm",
             "requested_rpm": rpm,
-            "max_rpm": _max_rpm,
-            "message": f"Requested {rpm} RPM exceeds limit of {_max_rpm} RPM. "
+            "max_rpm": maxRpm,
+            "message": f"Requested {rpm} RPM exceeds limit of {maxRpm} RPM. "
                        f"Re-send with override=true to proceed.",
-        }), 409)
-    return True, None
+        }), 409
+    return None
 
 # -----------------------------------------------------------------------------
 # Arduino API routes
@@ -260,146 +332,169 @@ def _check_rpm_limit(rpm, override):
 @app.route("/ping")
 def Ping():
     try:
-        return jsonify({"response": Mega.SendLine("PING")})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "response": Mega.Request("PING")})
+    except LinkError as e:
+        return LinkErrorResponse(e)
+
+def SnapshotResponse(view):
+    """Flatten a cached snapshot: firmware fields plus link freshness."""
+    out = dict(view["data"] or {})
+    out.update({
+        "link": view["link"],
+        "age_s": view["age_s"],
+        "updated_utc": view["updated_utc"],
+        "link_reason": view["reason"],
+        "port": view["port"],
+    })
+    return out
 
 @app.route("/status")
 def Status():
-    try:
-        return jsonify(Mega.QueryJsonStatus())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    # Served from the poll cache; never touches the port (#8, #29).
+    out = SnapshotResponse(Mega.StatusSnapshot())
+    out["max_rpm_limit"] = GetMaxRpm()
+    out["link_health"] = Mega.Health()
+    return jsonify(out)
+
+@app.route("/sensor")
+def Sensor():
+    # Served from the poll cache; never touches the port (#8, #29).
+    return jsonify(SnapshotResponse(Mega.SensorSnapshot()))
 
 @app.route("/start")
 def Start():
     try:
-        return jsonify({"response": Mega.SendLine("START")})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "response": Mega.Request("START")})
+    except LinkError as e:
+        return LinkErrorResponse(e)
 
 @app.route("/stop")
 def Stop():
+    # Priority path: on the wire immediately, not queued behind polls (#8).
     try:
-        return jsonify({"response": Mega.SendLine("STOP")})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, **Mega.Stop("STOP")})
+    except LinkError as e:
+        return LinkErrorResponse(e)
 
 @app.route("/kill")
 def Kill():
     try:
-        return jsonify({"response": Mega.SendLine("KILL")})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, **Mega.Stop("KILL")})
+    except LinkError as e:
+        return LinkErrorResponse(e)
 
 @app.route("/setFreq")
 def SetFreq():
     try:
-        hz = float(request.args.get("hz", ""))
-    except ValueError:
-        return jsonify({"error": "hz must be a number"}), 400
-    override = request.args.get("override", "0").lower() in ("1","true","yes")
-    autoStart = request.args.get("start", "1").lower() in ("1","true","yes")
-    # Convert Hz to RPM for limit check (use Arduino's PPR via last status,
-    # fall back to 200 if unknown)
-    ppr = 200
+        hz = ParseFiniteFloat("hz", lo=FW_HZ_MIN, hi=FW_HZ_MAX)
+    except BadInput as e:
+        return BadInputResponse(e)
+    override = ParseFlag("override", "0")
+    autoStart = ParseFlag("start", "1")
     try:
-        st = Mega.QueryJsonStatus()
-        ppr = int(st.get("ppr", 200))
-    except Exception:
-        pass
-    rpm = hz * 60.0 / ppr if ppr > 0 else 0
-    ok, err_resp = _check_rpm_limit(rpm, override)
-    if not ok:
-        return err_resp
-    try:
-        r1 = Mega.SendLine(f"SETFREQ {hz}")
-        r2 = Mega.SendLine("START") if autoStart else []
-        return jsonify({"setfreq": r1, "start": r2})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # RPM for the limit check uses the firmware's own PPR from STATUS.
+        ppr = CurrentStatusOr503().get("ppr")
+        if not isinstance(ppr, (int, float)) or ppr <= 0:
+            raise FirmwareError("STATUS has no valid ppr")
+        rpm = hz * 60.0 / ppr
+        err = CheckRpmLimit(rpm, override)
+        if err is not None:
+            return err
+        r1 = Mega.Request(f"SETFREQ {FormatNumber(hz)}")
+        r2 = Mega.Request("START") if autoStart else []
+        return jsonify({"ok": True, "setfreq": r1, "start": r2,
+                        "target_hz": ReplyValue(r1, r"^OK SETFREQ (\S+)$")})
+    except LinkError as e:
+        return LinkErrorResponse(e)
 
 @app.route("/setRpm")
 def SetRpm():
     try:
-        rpm = int(float(request.args.get("rpm", "")))
-    except ValueError:
-        return jsonify({"error": "rpm must be numeric"}), 400
-    override = request.args.get("override", "0").lower() in ("1","true","yes")
-    autoStart = request.args.get("start", "0").lower() in ("1","true","yes")
-    ok, err_resp = _check_rpm_limit(rpm, override)
-    if not ok:
-        return err_resp
+        rpm = ParseFiniteFloat("rpm")
+        if rpm <= 0:
+            raise BadInput("rpm must be > 0")
+    except BadInput as e:
+        return BadInputResponse(e)
+    override = ParseFlag("override", "0")
+    autoStart = ParseFlag("start", "0")
     try:
-        r1 = Mega.SendLine(f"SETRPM {rpm}")
-        r2 = Mega.SendLine("START") if autoStart else []
-        return jsonify({"setrpm": r1, "start": r2})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        ppr = CurrentStatusOr503().get("ppr")
+        if not isinstance(ppr, (int, float)) or ppr <= 0:
+            raise FirmwareError("STATUS has no valid ppr")
+        hz = rpm * ppr / 60.0
+        if hz < FW_HZ_MIN or hz > FW_HZ_MAX:
+            return BadInputResponse(BadInput(
+                f"rpm {rpm} at {ppr} pulses/rev is {hz:.3f} Hz; the firmware "
+                f"range is {FW_HZ_MIN} to {FW_HZ_MAX} Hz "
+                f"({FW_HZ_MIN * 60.0 / ppr:.3f} to {FW_HZ_MAX * 60.0 / ppr:.1f} RPM)"))
+        err = CheckRpmLimit(rpm, override)
+        if err is not None:
+            return err
+        r1 = Mega.Request(f"SETRPM {FormatNumber(rpm)}")
+        r2 = Mega.Request("START") if autoStart else []
+        return jsonify({"ok": True, "setrpm": r1, "start": r2,
+                        "target_hz": ReplyValue(r1, r"Hz=(\S+)$")})
+    except LinkError as e:
+        return LinkErrorResponse(e)
 
 @app.route("/setDirection")
 def SetDirection():
-    val = request.args.get("value", "")
+    val = request.args.get("value", "").strip().upper()
     if not val:
-        return jsonify({"error": "value required"}), 400
+        return BadInputResponse(BadInput("value required"))
+    token = DIRECTION_TOKENS.get(val)
+    if token is None:
+        return BadInputResponse(BadInput("value must be one of CW, CCW, 1, 0, +, -"))
     try:
-        return jsonify({"response": Mega.SendLine(f"SETDIR {val}")})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/sensor")
-def Sensor():
-    try:
-        r = Mega.SendLine("SENSOR?")
-        out = {"raw": r}
-        for line in r:
-            if line.startswith("ENV "):
-                rest = line[4:]
-                parts = rest.replace(" C", "").replace(" %RH", "").split(",")
-                if len(parts) >= 2:
-                    t = float(parts[0].strip()); h = float(parts[1].strip())
-                    out = {"temp_c": t, "humidity": h}
-                break
-        return jsonify(out)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        resp = Mega.Request(f"SETDIR {token}")
+        return jsonify({"ok": True, "response": resp,
+                        "dir": ReplyValue(resp, r"^OK SETDIR (\d)$")})
+    except LinkError as e:
+        return LinkErrorResponse(e)
 
 @app.route("/setSteps")
 def SetSteps():
     try:
-        n = int(request.args.get("value", ""))
-    except ValueError:
-        return jsonify({"error": "value must be integer"}), 400
+        n = ParseBoundedInt("value", 0, FW_STEPS_MAX)
+    except BadInput as e:
+        return BadInputResponse(e)
     try:
-        return jsonify({"response": Mega.SendLine(f"SETSTEPS {n}")})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "response": Mega.Request(f"SETSTEPS {n}")})
+    except LinkError as e:
+        return LinkErrorResponse(e)
 
 @app.route("/setMaxRpm")
 def SetMaxRpm():
-    global _max_rpm
     try:
-        n = int(request.args.get("value", ""))
-    except ValueError:
-        return jsonify({"error": "value must be integer"}), 400
+        n = ParseBoundedInt("value", FW_MAX_RPM_MIN, FW_MAX_RPM_MAX)
+    except BadInput as e:
+        return BadInputResponse(e)
     try:
-        resp = Mega.SendLine(f"SETMAXRPM {n}")
-        _max_rpm = n  # keep server-side mirror in sync
-        return jsonify({"response": resp, "max_rpm": _max_rpm})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        resp = Mega.Request(f"SETMAXRPM {n}")
+        applied = ReplyValue(resp, r"^OK SETMAXRPM (\d+)$")
+        # Refresh the cache so the limit mirror follows the firmware at once.
+        with contextlib.suppress(LinkError):
+            Mega.Request("STATUS", RequireStatus=False)
+        return jsonify({"ok": True, "response": resp,
+                        "max_rpm": int(applied) if applied is not None else GetMaxRpm()})
+    except LinkError as e:
+        return LinkErrorResponse(e)
 
 @app.route("/setRamp")
 def SetRamp():
     try:
-        up   = float(request.args.get("up", "0"))
-        down = float(request.args.get("down", "0"))
-    except ValueError:
-        return jsonify({"error": "up and down must be numeric (RPM/s)"}), 400
+        up = ParseFiniteFloat("up", "0", 0.0, HOST_RAMP_MAX_RPM_S)
+        down = ParseFiniteFloat("down", "0", 0.0, HOST_RAMP_MAX_RPM_S)
+    except BadInput as e:
+        return BadInputResponse(e)
     try:
-        return jsonify({"response": Mega.SendLine(f"SETRAMP {up} {down}")})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        resp = Mega.Request(f"SETRAMP {FormatNumber(up)} {FormatNumber(down)}")
+        # Report what the firmware says it applied, not what was asked for.
+        return jsonify({"ok": True, "response": resp,
+                        "ramp_up": ReplyValue(resp, r"UP=(\S+)"),
+                        "ramp_down": ReplyValue(resp, r"DOWN=(\S+)$")})
+    except LinkError as e:
+        return LinkErrorResponse(e)
 
 # -----------------------------------------------------------------------------
 # DAQ endpoints -- wired to LCRRecorder (BK894 over usbtmc)
@@ -478,4 +573,8 @@ def DaqData():
 # Main
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # debug=True is gone: the Werkzeug debugger allows arbitrary code
+    # execution from any host that can reach port 5000. The routes are still
+    # unauthenticated GETs that move the motor; see issue #14 for auth and
+    # POST. threaded=True keeps /stop answerable while another request waits.
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
