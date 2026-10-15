@@ -6,18 +6,41 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root{
-      --bg:#0f1116; --panel:#151924; --text:#e7e9ee; --muted:#aeb6c4; --accent:#3ea6ff;
-      --ok:#24c08b; --warn:#ffb020; --err:#ff5c5c; --line:#20273a; --frame:#2a3246;
+      /* Paul Tol "bright" scheme (colorblind safe). Every data or state color
+         on this page comes from these seven variables (#35). */
+      --tol-blue:#4477AA; --tol-cyan:#66CCEE; --tol-green:#228833; --tol-yellow:#CCBB44;
+      --tol-red:#EE6677; --tol-purple:#AA3377; --tol-grey:#BBBBBB;
+
+      /* Neutral surfaces and text (not data colors). */
+      --bg:#0f1116; --panel:#151924; --text:#e7e9ee; --muted:#aeb6c4; --line:#20273a;
+      --frame:#2a3246; --field:#0e1320; --plot-bg:#0a0d15; --ink:#111111;
+
+      /* Roles mapped onto the palette. */
+      --accent:var(--tol-cyan);
+      --ok:var(--tol-green);
+      --warn:var(--tol-yellow);
+      --err:var(--tol-red);
+      --unknown:var(--tol-grey);
+      --series-temp:var(--tol-red);
+      --series-rh:var(--tol-cyan);
     }
     *{box-sizing:border-box}
     body{margin:0;background:var(--bg);color:var(--text);
       font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial,"Noto Sans","Liberation Sans",sans-serif}
     header{
-      padding:12px 20px;border-bottom:1px solid #22283a;background:#0d1018cc;backdrop-filter:blur(8px);
-      position:sticky;top:0;z-index:5;display:flex;gap:16px;align-items:center;justify-content:space-between;
+      padding:12px 20px;border-bottom:1px solid var(--line);background:var(--bg);
+      position:sticky;top:0;z-index:5;display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;
     }
     .title{font-weight:600;letter-spacing:.2px}
     .container{max-width:1200px;margin:0 auto;padding:16px}
+
+    /* Link state chip and banner */
+    .chip{font-size:12px;font-weight:700;padding:3px 10px;border-radius:999px;letter-spacing:.5px;color:var(--ink)}
+    .chip-live{background:var(--ok);color:#ffffff}
+    .chip-stale{background:var(--warn)}
+    .chip-down{background:var(--err)}
+    .banner{padding:10px 20px;font-weight:600;background:var(--err);color:var(--ink)}
+    .banner[hidden]{display:none}
 
     /* Layout: Motor (top), Environment (middle), Camera (bottom) */
     .layout{
@@ -37,31 +60,46 @@
     .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;
       box-shadow:0 8px 24px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.03)}
     .panel h3{margin:0 0 10px 0;font-size:16px;font-weight:600;color:var(--muted)}
-    .badge{font-size:12px;padding:2px 8px;border-radius:999px;background:#101525;border:1px solid #22304a;color:var(--muted)}
+    .badge{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--field);border:1px solid var(--frame);color:var(--muted)}
+    .badge.is-running{border-color:var(--ok);color:var(--text)}
+    .badge.is-active{border-color:var(--accent);color:var(--text)}
+    .badge.is-unknown{border-color:var(--unknown);color:var(--unknown)}
     .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
     .controls input,.controls select,.controls button,.controls label{
-      background:#0e1320;color:var(--text);border:1px solid var(--frame);border-radius:10px;padding:8px 10px
+      background:var(--field);color:var(--text);border:1px solid var(--frame);border-radius:10px;padding:8px 10px
     }
     .controls label{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer}
-    .controls input[type="checkbox"]{accent-color:#3ea6ff}
+    .controls input[type="checkbox"]{accent-color:var(--accent)}
     .controls button{cursor:pointer}
+    .controls button.stop-btn{background:var(--err);color:var(--ink);border-color:var(--err);font-weight:700;min-width:96px}
+
+    .cmd-result{margin-top:10px;font-size:13px;padding:6px 10px;border-radius:10px;border:1px solid var(--frame);color:var(--muted);min-height:32px}
+    .cmd-result.ok{border-color:var(--ok);color:var(--text)}
+    .cmd-result.err{border-color:var(--err);color:var(--err)}
+    .cmd-result.pending{border-color:var(--accent)}
 
     .motor-panel{grid-area:mot}
     .env-panel{grid-area:env}
     .video-panel{grid-area:cam}
 
     .video-frame{width:100%;aspect-ratio:16/9;border-radius:12px;border:1px solid var(--frame);
-      background:#0a0c12;overflow:hidden;display:grid;place-items:center}
+      background:var(--plot-bg);overflow:hidden;display:grid;place-items:center}
     .video-frame img{width:100%;height:100%;object-fit:cover;display:block}
 
-    .uplot{background:#0a0d15;border-radius:10px;border:1px solid var(--frame)}
-    .foot{color:var(--muted);font-size:12px;text-align:right;margin-top:-4px}
+    .plot-wrap{position:relative}
+    .plot-wrap.stale #EnvPlot{opacity:.35;filter:grayscale(1)}
+    .chart-note{position:absolute;top:8px;right:10px;font-size:12px;padding:2px 8px;border-radius:999px;
+      background:var(--warn);color:var(--ink);font-weight:600}
+    .chart-note[hidden]{display:none}
+    .chart-note.unavailable{background:var(--unknown)}
+    #EnvPlot{min-height:320px;background:var(--plot-bg);border-radius:10px;border:1px solid var(--frame)}
+    .foot{color:var(--muted);font-size:12px;text-align:right;margin-top:4px}
     .flex{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
     /* Camera channel buttons */
     .cam-channels{display:flex;gap:6px;margin-right:auto}
     .cam-ch-btn{min-width:40px;text-align:center;transition:background .15s,border-color .15s}
-    .cam-ch-btn.active{background:#1a2840;border-color:var(--accent);color:var(--accent)}
+    .cam-ch-btn.active{border-color:var(--accent);color:var(--accent)}
 
     /* Confirmation dialog overlay */
     .dialog-overlay{
@@ -76,25 +114,28 @@
     .dialog-box p{margin:0 0 18px 0;color:var(--muted);font-size:14px;line-height:1.5}
     .dialog-actions{display:flex;gap:10px;justify-content:center}
     .dialog-actions button{padding:8px 20px;border-radius:10px;border:1px solid var(--frame);cursor:pointer;font-size:14px}
-    .dialog-actions .confirm{background:#3b2a10;color:var(--warn);border-color:#5a3e18}
-    .dialog-actions .cancel{background:#0e1320;color:var(--muted)}
+    .dialog-actions .cancel{background:var(--field);color:var(--text);border-color:var(--accent);font-weight:600}
+    .dialog-actions .confirm{background:var(--field);color:var(--warn);border-color:var(--warn)}
+    .dialog-actions button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 
     /* Sub-label for grouped inputs */
     .sub-label{font-size:11px;color:var(--muted);margin-bottom:2px}
     .motor-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:6px}
   </style>
-  <!-- uPlot -->
-  <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.17/dist/uPlot.min.css">
-  <script src="https://unpkg.com/uplot@1.6.17/dist/uPlot.iife.min.js"></script>
+  <!-- uPlot is loaded by the script at the end of the page: the local copy in
+       /static/vendor/uplot first, then unpkg as a fallback (#33). -->
 </head>
 <body>
   <header>
     <div class="title">HALO Dashboard</div>
     <div class="flex">
-      <span id="MotorState" class="badge">motor: idle</span>
-      <span id="EnvBadge" class="badge">env: --.- °C / --.- %</span>
+      <span id="LinkChip" class="chip chip-down" title="Mega serial link">DOWN</span>
+      <span id="LinkAge" class="badge">age ---</span>
+      <span id="MotorState" class="badge is-unknown">motor: unknown</span>
+      <span id="EnvBadge" class="badge is-unknown">env: --- °C / --- %</span>
     </div>
   </header>
+  <div id="LinkBanner" class="banner" role="alert" hidden></div>
 
   <main class="container">
     <div class="layout">
@@ -103,15 +144,15 @@
       <section class="panel motor-panel">
         <h3>Motor</h3>
         <div class="controls">
-          <input id="RpmBox" type="number" step="1" placeholder="RPM">
+          <input id="RpmBox" type="number" step="1" min="0" placeholder="RPM">
           <button id="SetRpm">Set RPM</button>
         </div>
         <div class="controls">
-          <input id="FreqBox" type="number" step="1" placeholder="Frequency (Hz)">
+          <input id="FreqBox" type="number" step="1" min="0.5" max="50000" placeholder="Frequency (Hz)">
           <button id="SetFreq">Set Hz</button>
         </div>
         <div class="controls">
-          <input id="StepsBox" type="number" step="1" placeholder="Steps">
+          <input id="StepsBox" type="number" step="1" min="0" placeholder="Steps">
           <button id="DoSteps">Move Steps</button>
         </div>
         <div class="controls">
@@ -123,7 +164,7 @@
         </div>
         <div class="controls">
           <button id="StartBtn">Start</button>
-          <button id="StopBtn">Stop</button>
+          <button id="StopBtn" class="stop-btn">STOP</button>
         </div>
 
         <h3 style="margin-top:14px">Ramp &amp; Limits</h3>
@@ -141,14 +182,16 @@
         <div class="motor-row">
           <div>
             <div class="sub-label">Max RPM</div>
-            <input id="MaxRpmBox" type="number" step="1" min="1" placeholder="1200" style="width:120px">
+            <input id="MaxRpmBox" type="number" step="1" min="1" max="100000" placeholder="1200" style="width:120px">
           </div>
           <button id="SetMaxRpm">Set Max</button>
         </div>
         <div class="motor-row">
-          <span id="RampBadge" class="badge">ramp: off</span>
-          <span id="MaxRpmBadge" class="badge">max RPM: 1200</span>
+          <span id="SpeedBadge" class="badge is-unknown">speed: ---</span>
+          <span id="RampBadge" class="badge is-unknown">ramp: ---</span>
+          <span id="MaxRpmBadge" class="badge is-unknown">max RPM: ---</span>
         </div>
+        <div id="CmdResult" class="cmd-result" role="status" aria-live="polite">No command sent yet.</div>
       </section>
 
       <!-- Environment (MIDDLE) -->
@@ -169,10 +212,13 @@
           <button id="ResetView">Reset View</button>
           <button id="SaveCsvWindow">Save CSV (window)</button>
           <button id="SaveCsvAll">Save CSV (session)</button>
-          <span id="HoverReadout" class="badge">t=-- s, T=--.- °C, RH=--.- %</span>
+          <span id="HoverReadout" class="badge">t=--- s, T=--- °C, RH=--- %</span>
         </div>
-        <div id="EnvPlot" style="height:320px;"></div>
-        <div class="foot">Wheel = zoom, drag = pan, hover = values.</div>
+        <div id="PlotWrap" class="plot-wrap stale">
+          <div id="EnvPlot"></div>
+          <span id="ChartNote" class="chart-note">loading chart</span>
+        </div>
+        <div class="foot">Wheel = zoom, drag = pan, hover = values. Gray chart = no fresh data.</div>
       </section>
 
       <!-- Camera (BOTTOM) -->
@@ -197,21 +243,64 @@
     </div>
   </main>
 
-  <!-- Max-RPM confirmation dialog -->
+  <!-- Max-RPM confirmation dialog. Cancel is first, focused, and the default:
+       Enter or Escape cancels; only an explicit click proceeds. -->
   <div id="RpmDialog" class="dialog-overlay" hidden>
-    <div class="dialog-box">
-      <h4>RPM Limit Exceeded</h4>
+    <div class="dialog-box" role="alertdialog" aria-modal="true" aria-labelledby="RpmDialogTitle" aria-describedby="RpmDialogMsg">
+      <h4 id="RpmDialogTitle">RPM Limit Exceeded</h4>
       <p id="RpmDialogMsg">Requested RPM exceeds the configured maximum.</p>
       <div class="dialog-actions">
-        <button class="cancel" id="RpmDialogCancel">Cancel</button>
-        <button class="confirm" id="RpmDialogConfirm">Proceed Anyway</button>
+        <button type="button" class="cancel" id="RpmDialogCancel" autofocus>Cancel</button>
+        <button type="button" class="confirm" id="RpmDialogConfirm">Proceed Anyway</button>
       </div>
     </div>
   </div>
 
   <script>
-    // ---------- helpers ----------
-    async function GET(u){ const r = await fetch(u); return r.json(); }
+    "use strict";
+
+    // ---------- constants ----------
+    const STALE_S = 2.0;            // same threshold as MEGA_STALE_AFTER_S in app.py
+    const POLL_MS = 500;            // delay between the end of one poll and the next
+    const RENDER_MS = 250;          // local re-render so ages keep counting if a poll hangs
+    const FETCH_TIMEOUT_MS = 3000;
+    const UPLOT_LOCAL_JS  = "/static/vendor/uplot/uPlot.iife.min.js";
+    const UPLOT_LOCAL_CSS = "/static/vendor/uplot/uPlot.min.css";
+    const UPLOT_CDN_JS    = "https://unpkg.com/uplot@1.6.17/dist/uPlot.iife.min.js";
+    const UPLOT_CDN_CSS   = "https://unpkg.com/uplot@1.6.17/dist/uPlot.min.css";
+
+    function Css(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+    function $(id){ return document.getElementById(id); }
+
+    // ---------- HTTP helper ----------
+    // Checks r.ok and throws with the server's error text. Never assumes success.
+    async function GET(u, timeoutMs = FETCH_TIMEOUT_MS){
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), timeoutMs);
+      let r;
+      try{
+        r = await fetch(u, {cache:"no-store", signal:ctl.signal});
+      }catch(e){
+        const err = new Error(e.name === "AbortError"
+          ? `no answer from the dashboard server in ${timeoutMs / 1000} s`
+          : `dashboard server unreachable (${e.message})`);
+        err.status = 0;
+        throw err;
+      }finally{
+        clearTimeout(timer);
+      }
+      let body = null;
+      try{ body = await r.json(); }catch(e){ body = null; }
+      if (!r.ok){
+        const msg = (body && (body.message || body.error)) || r.statusText || "request failed";
+        const err = new Error(`HTTP ${r.status}: ${msg}`);
+        err.status = r.status;
+        err.body = body;
+        throw err;
+      }
+      return body;
+    }
+
     function downloadCsv(name, rows){
       const blob = new Blob([rows.join("\n")], {type:"text/csv"});
       const url = URL.createObjectURL(blob);
@@ -219,118 +308,247 @@
       URL.revokeObjectURL(url);
     }
 
-    // ---------- motor ----------
-    function setBadgeRunning(running){
-      const el = document.getElementById("MotorState");
-      el.textContent = running ? "motor: running" : "motor: idle";
-      el.style.background = running ? "#0e1f18" : "#101525";
-      el.style.borderColor = running ? "#1f614a" : "#22304a";
+    function Num(v, digits){ return (typeof v === "number" && isFinite(v)) ? v.toFixed(digits) : "---"; }
+
+    // ---------- freshness: one rule for every indicator ----------
+    // A snapshot is fresh only when the server reports the link LIVE and the
+    // snapshot's age (server age plus time since this page received it) is
+    // within STALE_S. Anything else renders as "---" or "unknown", never as a
+    // plausible value such as "idle".
+    const Snap = {status:null, statusAt:0, sensor:null, sensorAt:0, serverError:null, polled:false};
+
+    function AgeOf(snap, receivedAt){
+      if (!snap || typeof snap.age_s !== "number") return Infinity;
+      return snap.age_s + (performance.now() - receivedAt) / 1000;
     }
-    async function refreshStatus(){
-      try{
-        const s = await GET("/status");
-        setBadgeRunning(!!s.running);
-        // Update ramp & max RPM badges from firmware status
-        if (s.ramp_up !== undefined) {
-          const up = parseFloat(s.ramp_up), dn = parseFloat(s.ramp_down);
-          const rampBadge = document.getElementById("RampBadge");
-          if (up > 0 || dn > 0) {
+    function LinkOf(snap, receivedAt){
+      if (Snap.serverError || !snap || snap.link === "DOWN") return "DOWN";
+      return (snap.link === "LIVE" && AgeOf(snap, receivedAt) <= STALE_S) ? "LIVE" : "STALE";
+    }
+    function IsFresh(snap, receivedAt){ return LinkOf(snap, receivedAt) === "LIVE"; }
+
+    function SetBadge(el, text, cls){
+      el.textContent = text;
+      el.classList.remove("is-running", "is-active", "is-unknown");
+      if (cls) el.classList.add(cls);
+    }
+
+    function Render(){
+      const st = Snap.status;
+      const link = LinkOf(st, Snap.statusAt);
+      const fresh = link === "LIVE";
+
+      const chip = $("LinkChip");
+      chip.textContent = link;
+      chip.className = "chip " + (link === "LIVE" ? "chip-live" : link === "STALE" ? "chip-stale" : "chip-down");
+      chip.title = st && st.link_reason ? `Mega link: ${st.link_reason}` : "Mega link";
+      const age = AgeOf(st, Snap.statusAt);
+      $("LinkAge").textContent = isFinite(age) ? `age ${age.toFixed(1)} s` : "age ---";
+
+      const banner = $("LinkBanner");
+      if (link === "DOWN" && Snap.polled){
+        banner.textContent = Snap.serverError
+          ? `Dashboard server unreachable: ${Snap.serverError}. Motor state unknown.`
+          : `Mega link DOWN (${(st && st.link_reason) || "not connected"}). Reconnecting. ` +
+            `Motor state unknown; STOP cannot reach the controller.`;
+        banner.hidden = false;
+      }else{
+        banner.hidden = true;
+      }
+
+      if (fresh){
+        SetBadge($("MotorState"), st.running ? "motor: running" : "motor: idle", st.running ? "is-running" : null);
+        SetBadge($("SpeedBadge"), `speed: ${Num(st.rpm, 1)} RPM (target ${Num(st.target_rpm, 1)})`, null);
+        const up = st.ramp_up, dn = st.ramp_down;
+        if (typeof up === "number" && typeof dn === "number"){
+          if (up > 0 || dn > 0){
             let txt = "ramp:";
             if (up > 0) txt += ` +${up}`;
             if (dn > 0) txt += ` -${dn}`;
             txt += " RPM/s";
-            if (s.ramping) txt += " (active)";
-            rampBadge.textContent = txt;
-            rampBadge.style.borderColor = s.ramping ? "#5a9e3e" : "#22304a";
-          } else {
-            rampBadge.textContent = "ramp: off";
-            rampBadge.style.borderColor = "#22304a";
+            if (st.ramping) txt += " (active)";
+            SetBadge($("RampBadge"), txt, st.ramping ? "is-active" : null);
+          }else{
+            SetBadge($("RampBadge"), "ramp: off", null);
           }
+        }else{
+          SetBadge($("RampBadge"), "ramp: ---", "is-unknown");
         }
-        if (s.max_rpm !== undefined) {
-          document.getElementById("MaxRpmBadge").textContent = `max RPM: ${s.max_rpm}`;
-        }
-      }catch(e){}
+        SetBadge($("MaxRpmBadge"), `max RPM: ${typeof st.max_rpm === "number" ? st.max_rpm : "---"}`, null);
+      }else{
+        SetBadge($("MotorState"), "motor: unknown", "is-unknown");
+        SetBadge($("SpeedBadge"), "speed: ---", "is-unknown");
+        SetBadge($("RampBadge"), "ramp: ---", "is-unknown");
+        SetBadge($("MaxRpmBadge"), "max RPM: ---", "is-unknown");
+      }
+
+      const se = Snap.sensor;
+      const envFresh = IsFresh(se, Snap.sensorAt);
+      if (envFresh){
+        SetBadge($("EnvBadge"), `env: ${Num(se.temp_c, 1)} °C / ${Num(se.humidity, 1)} %`, null);
+      }else{
+        SetBadge($("EnvBadge"), "env: --- °C / --- %", "is-unknown");
+      }
+      RenderChartFreshness(envFresh);
     }
-    setInterval(refreshStatus,1000);
+
+    // ---------- polling: chained, never overlapping ----------
+    let pollInFlight = null;
+    async function PollOnce(){
+      const [s, e] = await Promise.allSettled([GET("/status"), GET("/sensor")]);
+      const now = performance.now();
+      Snap.polled = true;
+      if (s.status === "fulfilled"){
+        Snap.status = s.value; Snap.statusAt = now; Snap.serverError = null;
+      }else{
+        Snap.serverError = s.reason.message;
+      }
+      if (e.status === "fulfilled"){
+        Snap.sensor = e.value; Snap.sensorAt = now;
+        ConsumeSensor(e.value, now);
+      }
+      Render();
+    }
+    function PollNow(){
+      if (!pollInFlight){
+        pollInFlight = PollOnce().catch(err => console.error(err)).finally(() => { pollInFlight = null; });
+      }
+      return pollInFlight;
+    }
+    async function PollLoop(){
+      try{ await PollNow(); }
+      finally{ setTimeout(PollLoop, POLL_MS); }
+    }
+    function RenderLoop(){
+      try{ Render(); }
+      catch(err){ console.error(err); }
+      finally{ setTimeout(RenderLoop, RENDER_MS); }
+    }
+
+    // ---------- command feedback ----------
+    function ShowCmd(text, cls){
+      const el = $("CmdResult");
+      el.textContent = text;
+      el.className = "cmd-result" + (cls ? " " + cls : "");
+    }
+    // The firmware's own acknowledgement lines, e.g. "OK SETRPM 30.00 Hz=100.000".
+    function ReplyText(res){
+      if (!res) return "OK";
+      const lines = [].concat(res.response || [], res.setrpm || [], res.setfreq || [], res.start || []);
+      return lines.length ? lines.join(" | ") : "OK";
+    }
+    async function RunCommand(label, fn){
+      ShowCmd(`${label}: sending`, "pending");
+      try{
+        const res = await fn();
+        if (res === null) ShowCmd(`${label}: cancelled`, null);
+        else ShowCmd(`${label}: ${ReplyText(res)}`, "ok");
+      }catch(err){
+        ShowCmd(`${label} failed: ${err.message}`, "err");
+      }finally{
+        PollNow();
+      }
+    }
+    function ReadNumber(id, label){
+      const raw = $(id).value.trim();
+      const v = Number(raw);
+      if (raw === "" || !isFinite(v)) throw new Error(`${label} must be a finite number`);
+      return v;
+    }
+    function Guarded(label, fn){
+      return () => {
+        let job;
+        try{ job = fn(); }catch(err){ ShowCmd(`${label} not sent: ${err.message}`, "err"); return; }
+        RunCommand(label, job);
+      };
+    }
 
     // ---- Max-RPM confirmation dialog plumbing ----
-    const rpmDialog      = document.getElementById("RpmDialog");
-    const rpmDialogMsg   = document.getElementById("RpmDialogMsg");
-    let   _rpmDialogResolve = null;
+    const rpmDialog    = $("RpmDialog");
+    const rpmDialogMsg = $("RpmDialogMsg");
+    const rpmCancelBtn = $("RpmDialogCancel");
+    let   rpmDialogResolve = null;
 
     function showRpmDialog(requested, max){
       rpmDialogMsg.textContent =
         `Requested ${requested} RPM exceeds the configured limit of ${max} RPM. ` +
         `Are you sure you want to proceed?`;
       rpmDialog.hidden = false;
-      return new Promise(resolve => { _rpmDialogResolve = resolve; });
+      rpmCancelBtn.focus();   // Cancel is the default action
+      return new Promise(resolve => { rpmDialogResolve = resolve; });
     }
-    document.getElementById("RpmDialogCancel").onclick = ()=>{
-      rpmDialog.hidden = true; if (_rpmDialogResolve) _rpmDialogResolve(false);
-    };
-    document.getElementById("RpmDialogConfirm").onclick = ()=>{
-      rpmDialog.hidden = true; if (_rpmDialogResolve) _rpmDialogResolve(true);
-    };
+    function closeRpmDialog(result){
+      rpmDialog.hidden = true;
+      const resolve = rpmDialogResolve;
+      rpmDialogResolve = null;
+      if (resolve) resolve(result);
+    }
+    rpmCancelBtn.onclick = () => closeRpmDialog(false);
+    $("RpmDialogConfirm").onclick = () => closeRpmDialog(true);
+    rpmDialog.addEventListener("keydown", (e) => {
+      if (e.key === "Escape"){ e.preventDefault(); closeRpmDialog(false); }
+    });
+    rpmDialog.addEventListener("click", (e) => { if (e.target === rpmDialog) closeRpmDialog(false); });
 
-    // Generic setter that handles 409 (exceeds_max_rpm) with a dialog
+    // Setter that turns a 409 (exceeds_max_rpm) into the confirm dialog.
     async function motorSet(url){
-      const r = await fetch(url);
-      if (r.status === 409) {
-        const body = await r.json();
-        if (body.error === "exceeds_max_rpm") {
-          const ok = await showRpmDialog(body.requested_rpm, body.max_rpm);
-          if (ok) {
-            // Resend with override
-            const sep = url.includes("?") ? "&" : "?";
-            const r2 = await fetch(url + sep + "override=1");
-            return r2.json();
-          }
-          return null; // cancelled
+      try{
+        return await GET(url);
+      }catch(err){
+        if (err.status === 409 && err.body && err.body.error === "exceeds_max_rpm"){
+          const ok = await showRpmDialog(err.body.requested_rpm, err.body.max_rpm);
+          if (!ok) return null;
+          const sep = url.includes("?") ? "&" : "?";
+          return await GET(url + sep + "override=1");
         }
+        throw err;
       }
-      return r.json();
     }
 
-    document.getElementById("SetRpm").onclick = async ()=>{
-      const rpm = parseFloat(document.getElementById("RpmBox").value || "0");
-      if(rpm>0) await motorSet(`/setRpm?rpm=${rpm}&start=1`); refreshStatus();
-    };
-    document.getElementById("SetFreq").onclick = async ()=>{
-      const hz = parseFloat(document.getElementById("FreqBox").value || "0");
-      if(hz>0) await motorSet(`/setFreq?hz=${hz}&start=1`); refreshStatus();
-    };
-    document.getElementById("DoSteps").onclick = async ()=>{
-      const n = parseInt(document.getElementById("StepsBox").value || "0",10);
-      if(n>0) await GET(`/setSteps?value=${n}`); refreshStatus();
-    };
-    document.getElementById("SetDir").onclick = async ()=>{
-      const v = document.getElementById("DirSel").value;
-      await GET(`/setDirection?value=${encodeURIComponent(v)}`); refreshStatus();
-    };
-    document.getElementById("StartBtn").onclick = async ()=>{ await GET("/start"); refreshStatus(); };
-    document.getElementById("StopBtn").onclick  = async ()=>{ await GET("/stop");  refreshStatus(); };
+    // ---------- motor ----------
+    $("SetRpm").onclick = Guarded("Set RPM", () => {
+      const rpm = ReadNumber("RpmBox", "RPM");
+      if (rpm <= 0) throw new Error("RPM must be > 0");
+      return () => motorSet(`/setRpm?rpm=${encodeURIComponent(rpm)}&start=1`);
+    });
+    $("SetFreq").onclick = Guarded("Set Hz", () => {
+      const hz = ReadNumber("FreqBox", "Frequency");
+      if (hz <= 0) throw new Error("frequency must be > 0");
+      return () => motorSet(`/setFreq?hz=${encodeURIComponent(hz)}&start=1`);
+    });
+    $("DoSteps").onclick = Guarded("Move steps", () => {
+      const n = ReadNumber("StepsBox", "Steps");
+      if (!Number.isInteger(n) || n <= 0) throw new Error("steps must be a whole number > 0");
+      return () => GET(`/setSteps?value=${encodeURIComponent(n)}`);
+    });
+    $("SetDir").onclick = Guarded("Set direction", () => {
+      const v = $("DirSel").value;
+      return () => GET(`/setDirection?value=${encodeURIComponent(v)}`);
+    });
+    $("StartBtn").onclick = () => RunCommand("Start", () => GET("/start"));
+    $("StopBtn").onclick  = () => RunCommand("STOP", () => GET("/stop"));
 
     // ---- Ramp controls ----
-    document.getElementById("SetRamp").onclick = async ()=>{
-      const up   = parseFloat(document.getElementById("RampUpBox").value   || "0");
-      const down = parseFloat(document.getElementById("RampDownBox").value || "0");
-      await GET(`/setRamp?up=${up}&down=${down}`);
-      refreshStatus();
-    };
+    $("SetRamp").onclick = Guarded("Set ramp", () => {
+      const upRaw = $("RampUpBox").value.trim(), dnRaw = $("RampDownBox").value.trim();
+      const up = upRaw === "" ? 0 : ReadNumber("RampUpBox", "Accel");
+      const down = dnRaw === "" ? 0 : ReadNumber("RampDownBox", "Decel");
+      if (up < 0 || down < 0) throw new Error("ramp rates must be >= 0");
+      return () => GET(`/setRamp?up=${encodeURIComponent(up)}&down=${encodeURIComponent(down)}`);
+    });
 
     // ---- Max RPM control ----
-    document.getElementById("SetMaxRpm").onclick = async ()=>{
-      const v = parseInt(document.getElementById("MaxRpmBox").value || "0", 10);
-      if(v > 0) await GET(`/setMaxRpm?value=${v}`);
-      refreshStatus();
-    };
+    $("SetMaxRpm").onclick = Guarded("Set max RPM", () => {
+      const v = ReadNumber("MaxRpmBox", "Max RPM");
+      if (!Number.isInteger(v) || v < 1) throw new Error("max RPM must be a whole number >= 1");
+      return () => GET(`/setMaxRpm?value=${encodeURIComponent(v)}`);
+    });
 
     // ---------- camera (multi-channel) ----------
     let currentCh = 0;
-    const camImg = document.getElementById("CamView");
-    const camSrcBadge = document.getElementById("CamSrcBadge");
-    const camLabel = document.getElementById("CamLabel");
+    const camImg = $("CamView");
+    const camSrcBadge = $("CamSrcBadge");
+    const camLabel = $("CamLabel");
     const camChBtns = document.querySelectorAll(".cam-ch-btn");
 
     function switchCam(ch){
@@ -348,26 +566,26 @@
     function reloadCam(){
       switchCam(currentCh);
     }
-    document.getElementById("ReloadCam").onclick = reloadCam;
-    document.getElementById("SnapshotBtn").onclick = ()=>{
+    $("ReloadCam").onclick = reloadCam;
+    $("SnapshotBtn").onclick = ()=>{
       const u = `/snapshot.jpg?ch=${currentCh}&ts=${Date.now()}`;
       const a = document.createElement("a"); a.href = u; a.download = `snapshot_cam${currentCh}.jpg`; a.click();
     };
     camImg.addEventListener("error", () => setTimeout(reloadCam, 800));
 
-    // ---------- environment plot (line, configurable window) ----------
-    const plotDiv = document.getElementById("EnvPlot");
-    const hoverReadout = document.getElementById("HoverReadout");
-    const envBadge = document.getElementById("EnvBadge");
-    const selWindow = document.getElementById("WindowSel");
-    const chkSmooth = document.getElementById("SmoothChk");
-    const chkMarkers = document.getElementById("MarkersChk");
+    // ---------- environment data (kept even when the chart is unavailable) ----------
+    const plotDiv = $("EnvPlot");
+    const plotWrap = $("PlotWrap");
+    const chartNote = $("ChartNote");
+    const hoverReadout = $("HoverReadout");
+    const selWindow = $("WindowSel");
+    const chkSmooth = $("SmoothChk");
+    const chkMarkers = $("MarkersChk");
 
-    const pollMs = 1000;
     let windowS = parseInt(selWindow.value, 10);
 
-    // live window arrays
-    const X  = [];   // seconds since start
+    // live window arrays (x = seconds since the first sample, server clock)
+    const X  = [];
     const TC = [];
     const RH = [];
 
@@ -376,26 +594,78 @@
     const Tall = [];
     const RHall = [];
 
-    const t0 = performance.now();
-    const nowS = () => (performance.now() - t0)/1000;
-
+    let t0Epoch = null;
+    let lastSampleUtc = null;
     let xFixMin = null, xFixMax = null;
+    let uplot = null;
+    let chartError = null;
 
+    function PushPoint(t, T, H){
+      X.push(t); TC.push(T); RH.push(H);
+      Xall.push(t); Tall.push(T); RHall.push(H);
+    }
+
+    // Append a point only for a fresh sample the page has not seen yet. A
+    // stale or repeated snapshot never extends the trace (G-27).
+    function ConsumeSensor(j, receivedAt){
+      if (!j || !IsFresh(j, receivedAt) || !j.updated_utc || j.updated_utc === lastSampleUtc) return;
+      const epoch = Date.parse(j.updated_utc) / 1000;
+      if (!isFinite(epoch)) return;
+      lastSampleUtc = j.updated_utc;
+      if (t0Epoch === null) t0Epoch = epoch;
+      const t = epoch - t0Epoch;
+      const T = (typeof j.temp_c === "number") ? j.temp_c : null;
+      const H = (typeof j.humidity === "number") ? j.humidity : null;
+      // Break the line across an outage instead of drawing a straight bridge.
+      if (X.length && t - X[X.length - 1] > 3 * STALE_S) PushPoint(X[X.length - 1] + 0.001, null, null);
+      PushPoint(t, T, H);
+      while (X.length && (t - X[0]) > windowS) { X.shift(); TC.shift(); RH.shift(); }
+      if (!uplot) return;
+      if (xFixMin == null || xFixMax == null){
+        const xmin = Math.max(0, t - windowS);
+        const xmax = Math.max(xmin + 1, t);
+        uplot.setScale("x", {min:xmin, max:xmax});
+      }
+      uplot.setData([X, TC, RH]);
+    }
+
+    function RenderChartFreshness(envFresh){
+      if (chartError){
+        plotWrap.classList.add("stale");
+        chartNote.textContent = `chart unavailable (${chartError})`;
+        chartNote.classList.add("unavailable");
+        chartNote.hidden = false;
+        return;
+      }
+      if (!uplot){
+        chartNote.textContent = "loading chart";
+        chartNote.hidden = false;
+        return;
+      }
+      plotWrap.classList.toggle("stale", !envFresh);
+      chartNote.classList.remove("unavailable");
+      chartNote.textContent = "no fresh data";
+      chartNote.hidden = envFresh;
+    }
+
+    // ---------- environment chart (only when uPlot loaded) ----------
     function makeSeries(){
       return [
         {},
         {
           label:"Temp (°C)",
+          stroke: Css("--series-temp"),
           width:2,
-          points:{show:chkMarkers.checked},
+          points:{show:chkMarkers.checked, stroke:Css("--series-temp"), fill:Css("--series-temp")},
           paths: chkSmooth.checked ? uPlot.paths.spline() : null, // null -> straight line
           spanGaps:false
         },
         {
           label:"RH (%)",
+          stroke: Css("--series-rh"),
           width:2,
           scale:"y2",
-          points:{show:chkMarkers.checked},
+          points:{show:chkMarkers.checked, stroke:Css("--series-rh"), fill:Css("--series-rh")},
           paths: chkSmooth.checked ? uPlot.paths.spline() : null,
           spanGaps:false
         },
@@ -403,60 +673,35 @@
     }
 
     function buildPlot(){
+      const axisColor = Css("--muted"), gridColor = Css("--line");
+      const axis = (extra) => Object.assign({stroke:axisColor, grid:{stroke:gridColor}, ticks:{stroke:gridColor}}, extra);
       return new uPlot({
         width: plotDiv.clientWidth,
         height: 320,
         scales: { x:{time:false}, y:{auto:true}, y2:{auto:true} },
         series: makeSeries(),
+        // Drag pans (handler below), so uPlot's own drag-to-zoom is off.
+        cursor: { drag:{x:false, y:false, setScale:false} },
         axes: [
-          {label:"t (s)"},
-          {label:"°C"},
-          {label:"% RH", scale:"y2"},
+          axis({label:"t (s)"}),
+          axis({label:"°C"}),
+          axis({label:"% RH", scale:"y2", side:1, grid:{show:false}}),
         ],
         hooks: {
           setCursor: [(u)=>{
             const i = u.cursor.idx;
             if(i==null || i<0 || i>=X.length) return;
             const s = (X[i] ?? 0).toFixed(1);
-            const t = TC[i] == null ? "--.-" : TC[i].toFixed(1);
-            const h = RH[i] == null ? "--.-" : RH[i].toFixed(1);
+            const t = TC[i] == null ? "---" : TC[i].toFixed(1);
+            const h = RH[i] == null ? "---" : RH[i].toFixed(1);
             hoverReadout.textContent = `t=${s} s, T=${t} °C, RH=${h} %`;
           }],
         },
-        plugins: [ (u)=>{
-          // wheel zoom
-          plotDiv.addEventListener("wheel",(e)=>{
-            e.preventDefault();
-            const {left} = u.bbox;
-            const xu = u.posToVal(e.clientX-left,"x");
-            const f = e.deltaY<0 ? 0.9 : 1.1;
-            const [min,max] = u.scales.x.range(u,"x");
-            xFixMin = xu - (xu-min)*f;
-            xFixMax = xu + (max-xu)*f;
-            u.setScale("x",{min:xFixMin,max:xFixMax});
-          },{passive:false});
-          // drag pan
-          let dragging=false, lastX=0;
-          plotDiv.addEventListener("mousedown",(e)=>{
-            dragging=true; lastX=e.clientX;
-            window.addEventListener("mouseup",()=>dragging=false,{once:true});
-          });
-          window.addEventListener("mousemove",(e)=>{
-            if(!dragging) return;
-            const dx = e.clientX-lastX; lastX=e.clientX;
-            const valDx = u.posToVal(0,"x") - u.posToVal(dx,"x");
-            const [min,max] = u.scales.x.range(u,"x");
-            xFixMin = (xFixMin ?? min) + valDx;
-            xFixMax = (xFixMax ?? max) + valDx;
-            u.setScale("x",{min:xFixMin,max:xFixMax});
-          });
-        }]
       }, [X,TC,RH], plotDiv);
     }
 
-    let uplot = buildPlot();
-
     function rebuildPlotKeepingData(){
+      if (!uplot) return;
       const xmin = uplot.scales.x.min, xmax = uplot.scales.x.max;
       uplot.destroy();
       uplot = buildPlot();
@@ -464,46 +709,91 @@
       if (xmin!=null && xmax!=null) uplot.setScale("x",{min:xmin,max:xmax});
     }
 
+    // Wheel zoom and drag pan, attached once to the container and acting on
+    // whichever uPlot instance is current.
+    plotDiv.addEventListener("wheel", (e)=>{
+      if (!uplot) return;
+      e.preventDefault();
+      const rect = uplot.over.getBoundingClientRect();
+      const xu = uplot.posToVal(e.clientX - rect.left, "x");
+      const f = e.deltaY < 0 ? 0.9 : 1.1;
+      const min = uplot.scales.x.min, max = uplot.scales.x.max;
+      xFixMin = xu - (xu - min) * f;
+      xFixMax = xu + (max - xu) * f;
+      uplot.setScale("x", {min:xFixMin, max:xFixMax});
+    }, {passive:false});
+    let dragging = false, lastX = 0;
+    plotDiv.addEventListener("mousedown", (e)=>{
+      if (!uplot) return;
+      dragging = true; lastX = e.clientX;
+      window.addEventListener("mouseup", ()=> dragging = false, {once:true});
+    });
+    window.addEventListener("mousemove", (e)=>{
+      if (!dragging || !uplot) return;
+      const dx = e.clientX - lastX; lastX = e.clientX;
+      const valDx = uplot.posToVal(0, "x") - uplot.posToVal(dx, "x");
+      const min = uplot.scales.x.min, max = uplot.scales.x.max;
+      xFixMin = (xFixMin ?? min) + valDx;
+      xFixMax = (xFixMax ?? max) + valDx;
+      uplot.setScale("x", {min:xFixMin, max:xFixMax});
+    });
+
     // resize handler (debounced)
     let rAF = 0;
     window.addEventListener("resize", ()=>{
+      if (!uplot) return;
       cancelAnimationFrame(rAF);
-      rAF = requestAnimationFrame(()=>uplot.setSize({width:plotDiv.clientWidth,height:320}));
+      rAF = requestAnimationFrame(()=> uplot && uplot.setSize({width:plotDiv.clientWidth, height:320}));
     });
 
-    function pushEnvPoint(T,H){
-      const t = nowS();
-      X.push(t); TC.push(T); RH.push(H);
-      Xall.push(t); Tall.push(T); RHall.push(H);
-
-      // keep window
-      while (X.length && (t - X[0]) > windowS) { X.shift(); TC.shift(); RH.shift(); }
-
-      // auto window unless user fixed x
-      if (xFixMin==null || xFixMax==null){
-        const xmin = Math.max(0, t - windowS);
-        const xmax = Math.max(xmin + 1, t);
-        uplot.setScale("x", {min:xmin, max:xmax});
-      }
-      uplot.setData([X,TC,RH]);
+    // ---------- uPlot loading: local copy first, unpkg fallback (#33) ----------
+    function LoadScript(src){
+      return new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = () => (window.uPlot ? resolve() : reject(new Error(`${src} did not define uPlot`)));
+        s.onerror = () => reject(new Error(`could not load ${src}`));
+        document.head.appendChild(s);
+      });
     }
-
-    async function pollEnv(){
+    function LoadCss(href){
+      return new Promise((resolve, reject) => {
+        const l = document.createElement("link");
+        l.rel = "stylesheet";
+        l.href = href;
+        l.onload = () => resolve();
+        l.onerror = () => { l.remove(); reject(new Error(`could not load ${href}`)); };
+        document.head.appendChild(l);
+      });
+    }
+    async function LoadUplot(){
+      LoadCss(UPLOT_LOCAL_CSS).catch(() => LoadCss(UPLOT_CDN_CSS)).catch(() => {});
       try{
-        const j = await GET("/sensor");
-        if (j && typeof j.temp_c === "number" && typeof j.humidity === "number"){
-          pushEnvPoint(j.temp_c, j.humidity);
-          envBadge.textContent = `env: ${j.temp_c.toFixed(1)} °C / ${j.humidity.toFixed(1)} %`;
-        }
-      }catch(e){}
+        await LoadScript(UPLOT_LOCAL_JS);
+      }catch(localErr){
+        console.warn(`${localErr.message}; trying unpkg`);
+        await LoadScript(UPLOT_CDN_JS);
+      }
     }
-    setInterval(pollEnv, pollMs);
-    pollEnv();
+    LoadUplot().then(() => {
+      try{
+        uplot = buildPlot();
+        uplot.setData([X, TC, RH]);
+      }catch(err){
+        uplot = null;
+        chartError = err.message;
+      }
+      Render();
+    }).catch((err) => {
+      chartError = "uPlot not loaded";
+      console.warn(err);
+      Render();
+    });
 
-    // controls
-    document.getElementById("ResetView").onclick = ()=>{
+    // ---------- environment controls ----------
+    $("ResetView").onclick = ()=>{
       xFixMin = xFixMax = null;
-      if (X.length){
+      if (uplot && X.length){
         const t = X[X.length-1];
         const xmin = Math.max(0, t - windowS);
         const xmax = Math.max(xmin + 1, t);
@@ -511,12 +801,12 @@
       }
     };
 
-    document.getElementById("SaveCsvWindow").onclick = ()=>{
+    $("SaveCsvWindow").onclick = ()=>{
       const rows = ["t_s,temp_c,humidity"];
       for(let i=0;i<X.length;i++) rows.push(`${X[i].toFixed(3)},${TC[i]??""},${RH[i]??""}`);
       downloadCsv(`environment_last${windowS}s.csv`, rows);
     };
-    document.getElementById("SaveCsvAll").onclick = ()=>{
+    $("SaveCsvAll").onclick = ()=>{
       const rows = ["t_s,temp_c,humidity"];
       for(let i=0;i<Xall.length;i++) rows.push(`${Xall[i].toFixed(3)},${Tall[i]??""},${RHall[i]??""}`);
       downloadCsv("environment_session.csv", rows);
@@ -524,10 +814,15 @@
 
     selWindow.addEventListener("change", ()=>{
       windowS = parseInt(selWindow.value,10);
-      document.getElementById("ResetView").click();
+      $("ResetView").click();
     });
     chkSmooth.addEventListener("change", rebuildPlotKeepingData);
     chkMarkers.addEventListener("change", rebuildPlotKeepingData);
+
+    // ---------- start ----------
+    Render();
+    PollLoop();
+    RenderLoop();
   </script>
 </body>
 </html>
