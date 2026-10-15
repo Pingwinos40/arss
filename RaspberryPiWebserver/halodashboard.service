@@ -1,27 +1,30 @@
 # /etc/systemd/system/halodashboard.service
+#
+# Expects the repository cloned at /home/admin/arss with its virtual
+# environment at /home/admin/arss/venv (see README "Setup"). app.py finds
+# html/ and static/ relative to its own folder, so run it from the repo.
 
 [Unit]
-Description=HALO Dashboard
+Description=ARSS Dashboard
 After=network-online.target dev-video0.device
 Wants=network-online.target
 
 [Service]
 User=admin
-# ensure access to /dev/video* and GPIO without sudo
+# ensure access to /dev/video* and GPIO without sudo; the BK894 is reached
+# through libusb with deploy/99-bk894.rules, so no usbtmc group is needed
 SupplementaryGroups=video gpio dialout tty
-WorkingDirectory=/home/admin/HALODashboard
-Environment="PATH=/home/admin/HALODashboard/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+WorkingDirectory=/home/admin/arss/RaspberryPiWebserver
+Environment="PATH=/home/admin/arss/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment=PYTHONUNBUFFERED=1
 # small settle so CSI + mux are ready
 ExecStartPre=/bin/sleep 2
 # pick a default mux channel on boot (Cam 0)
 ExecStartPre=/usr/bin/gpioset gpiochip0 4=0 17=0 18=1
-ExecStart=/home/admin/HALODashboard/venv/bin/python /home/admin/HALODashboard/app.py
+ExecStart=/home/admin/arss/venv/bin/python /home/admin/arss/RaspberryPiWebserver/app.py
 Restart=on-failure
 RestartSec=2
 TimeoutStartSec=30
 
 [Install]
 WantedBy=multi-user.target
-
-
